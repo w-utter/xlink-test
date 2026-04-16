@@ -1,3 +1,5 @@
+use tokio::sync::mpsc;
+
 #[tokio::main]
 async fn main() {
     let ctx = SearchCtx::new().await.unwrap();
@@ -23,8 +25,27 @@ async fn main() {
         let mut connection = dev.connect().await.unwrap();
         connection.send_event(Event::ping()).await.unwrap();
 
-        let mut read_buf = [0; 128];
+        connection.wait_for_pong().await;
+        println!("starting");
+
+        connection.create_stream("__bootloader", bootloader::MAX_PACKET_SIZE).await.unwrap();
+        connection.wait_for_stream("__bootloader").await;
+
+        connection.create_stream("__watchdog", 64).await.unwrap();
+        connection.wait_for_stream("__watchdog").await;
+
+        println!("got streams: {:?}", connection.created_streams);
+
+        connection.create_watchdog(1, std::time::Duration::from_millis(2000)).await;
+
+        loop {
+
+        }
+
+
+
         
+        /*
         use tokio::io::AsyncReadExt;
         let len = connection.inner().read(&mut read_buf).await.unwrap();
         println!("ping received {len:?}");
@@ -34,9 +55,7 @@ async fn main() {
         println!("{ping:?}");
 
 
-        connection.create_stream("__bootloader", bootloader::MAX_PACKET_SIZE, 100).await.unwrap();
 
-        connection.create_stream("__watchdog", 64, 101).await.unwrap();
 
 
         //NOTE: watchdog has a timeout where it just sends 4 empty bytes to keepalive the device
@@ -95,6 +114,7 @@ async fn main() {
                 }
             }
         }
+        */
 
         //connection.send_event(Event::create_stream(0, b"__bootloader", bootloader::MAX_PACKET_SIZE, 100)).await.unwrap();
 
@@ -135,7 +155,7 @@ async fn main() {
         //let _ = dev.boot(&firmware).await.unwrap();
         //let stream = dev.connect().await.unwrap();
         */
-        println!("connected")
+        //println!("connected")
     }
 }
 
@@ -372,31 +392,50 @@ impl core::fmt::Debug for StreamName {
 
 #[derive(Debug)]
 struct Connection {
-    inner: tokio::net::TcpStream,
-    requested_streams: HashMap<StreamName, (WriteStreamInfo, bool)>,
-    device_requested_streams: HashMap<StreamName, ReadStreamInfo>,
+    //inner: tokio::net::TcpStream,
+    //requested_streams: HashMap<StreamName, (WriteStreamInfo, bool)>,
+    //device_requested_streams: HashMap<StreamName, ReadStreamInfo>,
     created_streams: HashMap<StreamName, (ReadStreamInfo, WriteStreamInfo)>,
+    io_events: mpsc::Receiver<IoEvent>,
+    device_events: mpsc::Sender<DeviceEvent>,
+
+
     next_stream_id: u32,
 }
 
 impl Connection {
     async fn send_event<T: bytemuck::Pod + bytemuck::Zeroable>(&mut self, ev: Event<T>) -> std::io::Result<()> {
+
+        self.device_events.send(DeviceEvent::NormalEvent(ev.header)).await.unwrap();
+        /*
         use tokio::io::AsyncWriteExt;
+
+
+
         let header_buf = bytemuck::bytes_of(&ev.header);
 
         self.inner.write(header_buf).await?;
+        */
 
         Ok(())
     }
 
     async fn send_write_event<T: bytemuck::Pod + bytemuck::Zeroable>(&mut self, ev: Event<T>, data: Vec<u8>) -> std::io::Result<()> {
-        todo!()
+        self.device_events.send(DeviceEvent::WriteEvent(ev.header, data)).await.unwrap();
+            Ok(())
     }
 
+    /*
     fn inner(&mut self) -> &mut tokio::net::TcpStream {
         &mut self.inner
     }
+    */
 
+    async fn io_ev(&mut self) -> Option<IoEvent> {
+        self.io_events.recv().await
+    }
+
+    /*
     fn requested_stream_finished(&mut self, name: &StreamName) -> Option<WriteStreamInfo> {
         let (info, acked) = self.requested_streams.get(name)?;
 
@@ -406,20 +445,23 @@ impl Connection {
             None
         }
     }
+    */
 
-    async fn create_stream(&mut self, name: &str, write_size: u32, id: u32) -> std::io::Result<()> {
+    async fn create_stream(&mut self, name: &str, write_size: u32) -> std::io::Result<()> {
         let name_bytes = name.as_bytes();
 
         let stream_id = self.next_stream_id;
 
-        let ev = Event::create_stream(stream_id, &name_bytes, write_size, id);
+        let ev = Event::create_stream(stream_id, &name_bytes, write_size);
 
         self.next_stream_id += 1;
 
         let stream_name = ev.header.name;
 
-        self.send_event(ev).await?;
+        self.device_events.send(DeviceEvent::CreateStream(ev.header)).await.unwrap();
 
+
+        /*
         self.requested_streams.insert(stream_name, (WriteStreamInfo {
             write_size,
             id: stream_id,
@@ -492,8 +534,46 @@ impl Connection {
                 _ => continue,
             }
         }
+        */
 
         Ok(())
+    }
+
+    async fn create_watchdog(&mut self, stream_id: u32, period: std::time::Duration) {
+        self.device_events.send(DeviceEvent::CreateWatchDog(stream_id, period)).await.unwrap();
+    }
+
+    async fn wait_for_pong(&mut self) {
+        loop {
+            let Some(ev) = self.io_events.recv().await else {
+                panic!()
+            };
+
+            match ev {
+                IoEvent::Pong => return,
+                o => panic!("{o:?}"),
+            }
+        }
+    }
+
+    async fn wait_for_stream(&mut self, name: &str) {
+        if self.created_streams.get(name.as_bytes()).is_some() {
+            return
+        }
+
+        loop {
+            let Some(ev) = self.io_events.recv().await else {
+                panic!()
+            };
+
+            match ev {
+                IoEvent::CreatedStream(name, read, write) => {
+                    self.created_streams.insert(name, (read, write));
+                    return;
+                }
+                o => panic!("{o:?}")
+            }
+        }
     }
 }
 
@@ -507,10 +587,24 @@ impl IpDevice {
         let port = self.port.unwrap_or(Self::SOCKET_PORT);
         let stream = sock.connect((self.addr, port).into()).await?;
 
+        const EV_SIZE: usize = 16;
+
+        let (io_ev_tx, io_ev_rx) = mpsc::channel(EV_SIZE);
+        let (dev_ev_tx, dev_ev_rx) = mpsc::channel(EV_SIZE);
+
+        tokio::task::spawn(async move {
+            io_thread(stream, io_ev_tx, dev_ev_rx).await;
+        });
+
+
         Ok(Connection {
+            /*
             inner: stream,
             requested_streams: Default::default(),
             device_requested_streams: Default::default(),
+            */
+            device_events: dev_ev_tx,
+            io_events: io_ev_rx,
             created_streams: Default::default(),
             next_stream_id: 0,
         })
@@ -630,7 +724,7 @@ struct Event<T> {
 
 //TODO: make this more sealed (eg. supertrait w these)
 impl <T: bytemuck::Pod + bytemuck::Zeroable> Event<T> {
-    fn new(data: T, name: &[u8], ty: u32, id: u32, stream_id: u32, flags: u32) -> Self {
+    fn new(data: T, name: &[u8], ty: u32, stream_id: u32, flags: u32) -> Self {
         let header = {
             if name.len() > MAX_STREAM_NAME_LEN {
                 panic!()
@@ -645,7 +739,7 @@ impl <T: bytemuck::Pod + bytemuck::Zeroable> Event<T> {
 
             let secs = ts.as_secs();
             EventHeader {
-                id,
+                id: 0,
                 ty,
                 name: StreamName(header_name),
                 nsec: ts.subsec_nanos(),
@@ -670,7 +764,7 @@ struct Ping;
 
 impl Event<Ping> {
     fn ping() -> Self {
-        Event::new(Ping, b"", EventType::PingReq as u32, 0, 0, 0)
+        Event::new(Ping, b"", EventType::PingReq as u32, 0, 0)
     }
 }
 
@@ -679,8 +773,8 @@ impl Event<Ping> {
 struct CreateStream;
 
 impl Event<CreateStream> {
-    fn create_stream<N: Borrow<[u8]>>(stream_id: u32, name: &N, write_size: u32, id: u32) -> Self {
-        let mut ev = Event::new(CreateStream, name.borrow(), EventType::CreateStreamReq as u32, id, stream_id, 0);
+    fn create_stream<N: Borrow<[u8]>>(stream_id: u32, name: &N, write_size: u32) -> Self {
+        let mut ev = Event::new(CreateStream, name.borrow(), EventType::CreateStreamReq as u32, stream_id, 0);
         ev.header.size = write_size;
         ev
     }
@@ -692,8 +786,9 @@ struct AckStream;
 
 impl Event<AckStream> {
     fn acknowledge_stream<N: Borrow<[u8]>>(stream_id: u32, name: &N, write_size: u32, id: u32) -> Self {
-        let mut ev = Event::new(AckStream, name.borrow(), EventType::CreateStreamResp as u32, id, stream_id, 1);
+        let mut ev = Event::new(AckStream, name.borrow(), EventType::CreateStreamResp as u32, stream_id, 1);
         ev.header.size = write_size;
+        ev.header.id = id;
         ev
     }
 }
@@ -704,8 +799,9 @@ struct AckReadRel;
 
 impl Event<AckReadRel> {
     fn acknowledge_read_release<N: Borrow<[u8]>>(stream_id: u32, name: &N, size: u32, id: u32) -> Self {
-        let mut ev = Event::new(AckReadRel, name.borrow(), EventType::ReadRelResp as u32, id, stream_id, 1);
+        let mut ev = Event::new(AckReadRel, name.borrow(), EventType::ReadRelResp as u32, stream_id, 1);
         ev.header.size = size;
+        ev.header.id = id;
         ev
     }
 }
@@ -715,8 +811,8 @@ impl Event<AckReadRel> {
 struct Write;
 
 impl Event<Write> {
-    fn write<N: Borrow<[u8]>>(stream_id: u32, name: &N, id: u32, data: &[u8]) -> Self {
-        let mut ev = Event::new(Write, name.borrow(), EventType::WriteReq as u32, id, stream_id, 0);
+    fn write<N: Borrow<[u8]>>(stream_id: u32, name: &N, data: &[u8]) -> Self {
+        let mut ev = Event::new(Write, name.borrow(), EventType::WriteReq as u32, stream_id, 0);
         ev.header.size = data.len() as u32;
         ev
     }
@@ -927,18 +1023,24 @@ pub mod bootloader {
     }
 }
 
+#[derive(Debug)]
 enum IoEvent {
+    Pong,
     CreatedStream(StreamName, ReadStreamInfo, WriteStreamInfo),
 }
 
 enum DeviceEvent {
+    CreateStream(EventHeader),
     NormalEvent(EventHeader),
     WriteEvent(EventHeader, Vec<u8>),
+    // stream id, watchdog interval
+    CreateWatchDog(u32, std::time::Duration),
 }
 
-async fn io_thread(mut stream: tokio::net::TcpStream, io_evs: tokio::sync::mpsc::Sender<IoEvent>, mut device_evs: tokio::sync::mpsc::Receiver<DeviceEvent>) {
 
-    let mut recv_buf = [0; XLINK_MAX_PACKET_SIZE];
+async fn io_thread(mut stream: tokio::net::TcpStream, io_evs: mpsc::Sender<IoEvent>, mut device_evs: mpsc::Receiver<DeviceEvent>) {
+
+    let mut recv_buf = [0; 2048];
     use tokio::io::AsyncReadExt;
 
     let mut requested_streams = HashMap::new();
@@ -946,7 +1048,24 @@ async fn io_thread(mut stream: tokio::net::TcpStream, io_evs: tokio::sync::mpsc:
 
     use tokio::io::AsyncWriteExt;
 
+    let mut id = 0;
+
+    let mut watchdog = None::<(u32, tokio::time::Interval)>;
+
+
     loop {
+        let mut watchdog_task = async {
+            if let Some((stream, interval)) = watchdog.as_mut() {
+                interval.tick().await;
+                *stream
+            } else {
+                std::future::pending::<()>().await;
+                0
+            }
+        };
+
+
+
         tokio::select!{
             res = stream.read(&mut recv_buf) => {
                 let Ok(len) = res else {
@@ -988,7 +1107,7 @@ async fn io_thread(mut stream: tokio::net::TcpStream, io_evs: tokio::sync::mpsc:
                         }
 
                         if let Some(existing) = requested_stream_finished(&mut requested_streams, &header.name) {
-                            io_evs.send(IoEvent::CreatedStream(header.name, ReadStreamInfo { read_size: header.size, id: header.stream_id}, existing));
+                            io_evs.send(IoEvent::CreatedStream(header.name, ReadStreamInfo { read_size: header.size, id: header.stream_id}, existing)).await.unwrap();
                         } else {
                             device_requested_streams.insert(header.name, ReadStreamInfo {
                                 read_size: header.size,
@@ -1000,7 +1119,7 @@ async fn io_thread(mut stream: tokio::net::TcpStream, io_evs: tokio::sync::mpsc:
                         if let Some(existing) = device_requested_streams.remove(&header.name) {
                             let (host_requested, _) = requested_streams.remove(&header.name).unwrap();
 
-                            io_evs.send(IoEvent::CreatedStream(header.name, existing, host_requested));
+                            io_evs.send(IoEvent::CreatedStream(header.name, existing, host_requested)).await.unwrap();
                         } else {
                             let (_, acked) = requested_streams.get_mut(&header.name).unwrap();
                             *acked = true;
@@ -1014,7 +1133,8 @@ async fn io_thread(mut stream: tokio::net::TcpStream, io_evs: tokio::sync::mpsc:
                             stream.write(header_buf).await.unwrap();
                         }
                     }
-                    EventType::WriteResp | EventType::ReadResp | EventType::ReadRelResp | EventType::ReadRelSpecResp | EventType::CloseStreamResp | EventType::PingResp => continue,
+                    EventType::PingResp => io_evs.send(IoEvent::Pong).await.unwrap(),
+                    EventType::WriteResp | EventType::ReadResp | EventType::ReadRelResp | EventType::ReadRelSpecResp | EventType::CloseStreamResp => continue,
 
                     t => println!("skipping event ty {t:?}"),
                 }
@@ -1025,20 +1145,49 @@ async fn io_thread(mut stream: tokio::net::TcpStream, io_evs: tokio::sync::mpsc:
                 };
 
                 match ev {
-                    DeviceEvent::NormalEvent(ev) => {
+                    DeviceEvent::NormalEvent(mut ev) => {
+                        ev.id = id;
                         {
                             let header_buf = bytemuck::bytes_of(&ev);
                             stream.write(header_buf).await.unwrap();
                         }
+                        id += 1;
                     }
-                    DeviceEvent::WriteEvent(ev, data) => {
+                    DeviceEvent::WriteEvent(mut ev, data) => {
+                        ev.id = id;
                         {
                             let header_buf = bytemuck::bytes_of(&ev);
                             stream.write(header_buf).await.unwrap();
                         }
                         stream.write(&data).await.unwrap();
+                        id += 1;
+                    }
+                    DeviceEvent::CreateStream(mut ev) => {
+                        requested_streams.insert(ev.name, (WriteStreamInfo { write_size: ev.size, id: ev.stream_id }, false));
+
+                        ev.id = id;
+                        {
+                            let header_buf = bytemuck::bytes_of(&ev);
+                            stream.write(header_buf).await.unwrap();
+                        }
+                        id += 1;
+                    }
+                    DeviceEvent::CreateWatchDog(stream_id, period) => {
+                        watchdog = Some((stream_id, tokio::time::interval(period)));
                     }
                 }
+            }
+            stream_id = watchdog_task => {
+                let data = [0, 0, 0, 0];
+                let mut ev = Event::write(stream_id, b"", &data);
+                ev.header.id = id;
+
+                {
+                    let header_buf = bytemuck::bytes_of(&ev.header);
+                    stream.write(header_buf).await.unwrap();
+                }
+                stream.write(&data).await.unwrap();
+                id += 1;
             }
         }
     }
