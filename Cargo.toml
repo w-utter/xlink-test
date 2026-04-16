@@ -9,3 +9,5 @@ bytemuck = {version = "1.25", features = ["derive"]}
 tokio = {version = "1.51", features = ["full"]}
 
 getifaddrs = "0.6"
+
+memchr = "2.8"

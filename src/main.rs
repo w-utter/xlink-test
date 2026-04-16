@@ -1,11 +1,141 @@
 #[tokio::main]
 async fn main() {
     let ctx = SearchCtx::new().await.unwrap();
-    let devs = ctx.search_ip(SearchParams::default()).await.unwrap();
+
+    let mut devs = vec![];
+
+    loop {
+        devs = ctx.search_ip(SearchParams::default()).await.unwrap();
+        if !devs.is_empty() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+
     println!("found devices: {devs:?}");
 
+    //let firmware = 
+
+    //let firmware = vec![];
+
+
     for dev in devs {
-        let stream = dev.connect().await.unwrap();
+        let mut connection = dev.connect().await.unwrap();
+        connection.send_event(Event::ping()).await.unwrap();
+
+        let mut read_buf = [0; 128];
+        
+        use tokio::io::AsyncReadExt;
+        let len = connection.inner().read(&mut read_buf).await.unwrap();
+        println!("ping received {len:?}");
+        let buf = &read_buf[..len];
+
+        let ping = bytemuck::from_bytes::<EventHeader>(buf);
+        println!("{ping:?}");
+
+
+        connection.create_stream("__bootloader", bootloader::MAX_PACKET_SIZE, 100).await.unwrap();
+
+        connection.create_stream("__watchdog", 64, 101).await.unwrap();
+
+
+        //NOTE: watchdog has a timeout where it just sends 4 empty bytes to keepalive the device
+        // - needs to be sent every 4000 ms
+
+        println!("self: {connection:?}");
+
+        let mut interval = tokio::time::interval(std::time::Duration::from_millis(2000));
+
+        let mut buf = [0; 128];
+
+        let mut id = 1000;
+
+        let data = bootloader::request::Command::GetBootloaderType as u32;
+        let data_buf = bytemuck::bytes_of(&data);
+        let write = Event::write(0, b"__bootloader", 1000, data_buf);
+
+        use tokio::io::AsyncWriteExt;
+        connection.send_event(write).await.unwrap();
+        connection.inner().write(data_buf).await.unwrap();
+
+        loop {
+            tokio::select! {
+                _ = interval.tick() => {
+                    use tokio::io::AsyncWriteExt;
+                    let data = &[0, 0, 0, 0];
+                    connection.send_event(Event::write(1, b"__watchdog", id, data)).await.unwrap();
+                    connection.inner().write(data).await.unwrap();
+
+                    id += 1;
+                }
+                res = connection.inner().read(&mut buf) => {
+                    let len = res.unwrap();
+                    let buf = &buf[..core::cmp::min(len, core::mem::size_of::<EventHeader>())];
+
+                    if len < core::mem::size_of::<EventHeader>() {
+                        continue;
+                    }
+
+
+                    let stream = bytemuck::from_bytes::<EventHeader>(buf);
+
+                    let Ok(ty) = EventType::try_from(stream.ty) else {
+                        continue;
+                    };
+
+                    println!("{stream:?} ({len:?})");
+
+                    match ty {
+                        EventType::ReadRelReq => {
+                            connection.send_event(Event::acknowledge_read_release(stream.stream_id, &stream.name, stream.size, stream.id)).await.unwrap();
+
+                        }
+                        _ => (),
+                    }
+                }
+            }
+        }
+
+        //connection.send_event(Event::create_stream(0, b"__bootloader", bootloader::MAX_PACKET_SIZE, 100)).await.unwrap();
+
+        //connection.send_event(Event::create_stream(1, b"__watchdog", 64, 101)).await.unwrap();
+
+        /*
+        loop {
+            let len = connection.inner().read(&mut read_buf).await.unwrap();
+            println!("stream 1 received {len:?}");
+            let buf = &read_buf[..core::cmp::min(len, core::mem::size_of::<EventHeader>())];
+
+            let stream = bytemuck::from_bytes::<EventHeader>(buf);
+            println!("device response: {stream:?}");
+
+            let Ok(ty) = EventType::try_from(stream.ty) else {
+                continue;
+            };
+
+            match ty {
+                EventType::CreateStreamReq => {
+                    println!("sending ack");
+                    connection.send_event(Event::acknowledge_stream(stream.stream_id, &stream.name.0, stream.size, stream.id)).await.unwrap();
+                }
+                _ => continue,
+            }
+        }
+        */
+
+        /*
+
+        let len = connection.inner().read(&mut read_buf).await.unwrap();
+        println!("stream 2 received {len:?}");
+        let buf = &read_buf[..len];
+
+        let stream2 = bytemuck::from_bytes::<EventHeader>(buf);
+        println!("{stream2:?}");
+
+        //let _ = dev.boot(&firmware).await.unwrap();
+        //let stream = dev.connect().await.unwrap();
+        */
+        println!("connected")
     }
 }
 
@@ -31,11 +161,11 @@ impl SearchCtx {
         })
     }
     const BROADCAST_PORT: u16 = 11491;
-    const DEVICE_DISCOVERY_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(2000);
+    const DEVICE_DISCOVERY_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(200);
 
     async fn search_ip(&self, params: SearchParams) -> std::io::Result<Vec<IpDevice>> {
         if let Some(target) = params.addr {
-            let cmd = HostCommand::DeviceDiscover as u8;
+            let cmd = HostCommand::DeviceDiscover as u32;
             let send_buffer = bytemuck::bytes_of(&cmd);
             self.broadcast_sock.send_to(send_buffer, (target, Self::BROADCAST_PORT)).await?;
         }
@@ -62,7 +192,9 @@ impl SearchCtx {
             let recv_buf = bytemuck::bytes_of_mut(&mut recv);
             let (len, addr) = self.broadcast_sock.recv_from(recv_buf).await?;
 
-            if len != core::mem::size_of::<DeviceDiscoveryResponse>() {
+            println!("received: {len:?} - {}", core::mem::size_of::<DeviceDiscoveryResponse>());
+
+            if len < core::mem::size_of::<DeviceDiscoveryResponse>() {
                 continue;
             }
 
@@ -78,33 +210,38 @@ impl SearchCtx {
                 continue;
             }
 
+            let state = recv.device_state();
             let device = match recv.host_command() {
+                Some(HostCommand::DeviceDiscover) if len != core::mem::size_of::<DeviceDiscoveryResponse>() => continue,
                 Some(HostCommand::DeviceDiscover) => {
                     IpDevice {
                         addr: addr.ip(),
                         mxid: recv.mxid,
-                        state: target_state,
+                        state,
                         port: None,
                     }
                 }
-                Some(HostCommand::DeviceDiscoveryEx) if len < core::mem::size_of::<DeviceDiscoveryResponseExt>() => continue,
+                Some(HostCommand::DeviceDiscoveryEx) if len != core::mem::size_of::<DeviceDiscoveryResponseExt>() => continue,
                 Some(HostCommand::DeviceDiscoveryEx) => {
                     IpDevice {
                         addr: addr.ip(),
                         mxid: recv.mxid,
-                        state: target_state,
+                        state,
                         port: Some(recv.port_http)
                     }
                 }
                 _ => continue,
             };
+
             devices.push(device);
         }
     }
 
     async fn send_broadcast_ip(&self) -> std::io::Result<()> {
-        let cmd = HostCommand::DeviceDiscover as u8;
+        let cmd = HostCommand::DeviceDiscover as u32;
         let send_buffer = bytemuck::bytes_of(&cmd);
+
+        println!("sending: {send_buffer:?}");
 
         // send to all network interfaces
         for itf in getifaddrs::getifaddrs()? {
@@ -116,14 +253,22 @@ impl SearchCtx {
 
             match itf.address {
                 Address::V4(ipv4) => {
-                    let netmask = ipv4.netmask.unwrap_or(std::net::Ipv4Addr::UNSPECIFIED);
-                    let addr = ipv4.address & !netmask;
+                    let addr = if let Some(addr) = ipv4.associated_address && itf.flags.contains(InterfaceFlags::BROADCAST) {
+                        addr
+                    } else {
+                        let netmask = ipv4.netmask.unwrap_or(std::net::Ipv4Addr::UNSPECIFIED);
+                        ipv4.address & !netmask
+                    };
 
                     let _ = self.broadcast_sock.send_to(send_buffer, (addr, Self::BROADCAST_PORT)).await;
                 }
                 Address::V6(ipv6) => {
-                    let netmask = ipv6.netmask.unwrap_or(std::net::Ipv6Addr::UNSPECIFIED);
-                    let addr = ipv6.address & !netmask;
+                    let addr = if let Some(addr) = ipv6.associated_address && itf.flags.contains(InterfaceFlags::BROADCAST) {
+                        addr
+                    } else {
+                        let netmask = ipv6.netmask.unwrap_or(std::net::Ipv6Addr::UNSPECIFIED);
+                        ipv6.address & !netmask
+                    };
 
                     let _ = self.broadcast_sock.send_to(send_buffer, (addr, Self::BROADCAST_PORT)).await;
                 }
@@ -137,7 +282,6 @@ impl SearchCtx {
     }
 }
 
-#[derive(Debug)]
 struct IpDevice {
     addr: std::net::IpAddr,
     mxid: [u8; 32],
@@ -146,8 +290,216 @@ struct IpDevice {
 }
 
 impl IpDevice {
+    fn mxid(&self) -> Option<&str> {
+        let len = memchr::memchr(0, &self.mxid).unwrap_or(self.mxid.len());
+        core::str::from_utf8(&self.mxid[..len]).ok()
+    }
+}
+
+impl core::fmt::Debug for IpDevice {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("IpDevice")
+            .field("addr", &self.addr)
+            .field("mxid", &self.mxid())
+            .field("state", &self.state)
+            .field("port", &self.port)
+            .finish()
+    }
+}
+
+use std::collections::HashMap;
+
+#[derive(Debug)]
+struct ReadStreamInfo {
+    read_size: u32,
+    id: u32,
+}
+
+#[derive(Debug)]
+struct WriteStreamInfo {
+    write_size: u32,
+    id: u32,
+}
+
+#[derive(Clone, Copy)]
+#[repr(transparent)]
+struct StreamName([u8; MAX_STREAM_NAME_LEN]);
+
+impl core::cmp::PartialEq for StreamName {
+    fn eq(&self, other: &Self) -> bool {
+        self.as_bytes() == other.as_bytes()
+    }
+}
+
+impl core::cmp::Eq for StreamName {}
+
+impl core::hash::Hash for StreamName {
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
+        self.as_bytes().hash(state)
+    }
+}
+
+use core::borrow::Borrow;
+
+impl Borrow<[u8]> for StreamName {
+    fn borrow(&self) -> &[u8] {
+        self.0.as_ref()
+    }
+}
+
+impl StreamName {
+    fn as_bytes(&self) -> &[u8] {
+        let len = memchr::memchr(0, &self.0).unwrap_or(self.0.len());
+        &self.0[..len]
+    }
+}
+
+unsafe impl bytemuck::Pod for StreamName {}
+unsafe impl bytemuck::Zeroable for StreamName {}
+
+impl core::fmt::Debug for StreamName {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let res = std::string::String::from_utf8_lossy(self.as_bytes());
+        let s: &str = &*res;
+        write!(f, "{s:?}")?;
+        Ok(())
+    }
+}
+
+
+// TODO: move io handling into seperate task,
+// change some stuff around to work with it in existing fns
+
+#[derive(Debug)]
+struct Connection {
+    inner: tokio::net::TcpStream,
+    requested_streams: HashMap<StreamName, (WriteStreamInfo, bool)>,
+    device_requested_streams: HashMap<StreamName, ReadStreamInfo>,
+    created_streams: HashMap<StreamName, (ReadStreamInfo, WriteStreamInfo)>,
+    next_stream_id: u32,
+}
+
+impl Connection {
+    async fn send_event<T: bytemuck::Pod + bytemuck::Zeroable>(&mut self, ev: Event<T>) -> std::io::Result<()> {
+        use tokio::io::AsyncWriteExt;
+        let header_buf = bytemuck::bytes_of(&ev.header);
+
+        self.inner.write(header_buf).await?;
+
+        Ok(())
+    }
+
+    async fn send_write_event<T: bytemuck::Pod + bytemuck::Zeroable>(&mut self, ev: Event<T>, data: Vec<u8>) -> std::io::Result<()> {
+        todo!()
+    }
+
+    fn inner(&mut self) -> &mut tokio::net::TcpStream {
+        &mut self.inner
+    }
+
+    fn requested_stream_finished(&mut self, name: &StreamName) -> Option<WriteStreamInfo> {
+        let (info, acked) = self.requested_streams.get(name)?;
+
+        if *acked {
+            self.requested_streams.remove(name).map(|(info, _)| info)
+        } else {
+            None
+        }
+    }
+
+    async fn create_stream(&mut self, name: &str, write_size: u32, id: u32) -> std::io::Result<()> {
+        let name_bytes = name.as_bytes();
+
+        let stream_id = self.next_stream_id;
+
+        let ev = Event::create_stream(stream_id, &name_bytes, write_size, id);
+
+        self.next_stream_id += 1;
+
+        let stream_name = ev.header.name;
+
+        self.send_event(ev).await?;
+
+        self.requested_streams.insert(stream_name, (WriteStreamInfo {
+            write_size,
+            id: stream_id,
+        }, false));
+
+        let mut read_buf = [0; 128];
+
+
+        // might be better to have a background task running on the read side of the tcp stream
+        // the thread should have both tx & rx for acking
+        // then just send stuff over channels
+        //
+        // can just run the tcpstream seperately and communicate bidirectionally with channels?
+        // - stuff doesnt need to be split up and everything else stays roughly the same
+        // - need to have smth similar to blocking evs
+        // - might as well also refactor the event stuff afterward
+        
+        use tokio::io::AsyncReadExt;
+        loop {
+            let len = self.inner.read(&mut read_buf).await.unwrap();
+            let buf = &read_buf[..core::cmp::min(len, core::mem::size_of::<EventHeader>())];
+
+            if len < core::mem::size_of::<EventHeader>() {
+                continue;
+            }
+
+            let stream = bytemuck::from_bytes::<EventHeader>(buf);
+
+            println!("while creating stream: {stream:?}");
+
+            let Ok(ty) = EventType::try_from(stream.ty) else {
+                continue;
+            };
+
+            match ty {
+                EventType::CreateStreamReq => {
+                    self.send_event(Event::acknowledge_stream(stream.stream_id, &stream.name.0, stream.size, stream.id)).await.unwrap();
+
+                    if let Some(existing) = self.requested_stream_finished(&stream.name) {
+                        self.created_streams.insert(stream.name, (ReadStreamInfo {
+                            read_size: stream.size,
+                            id: stream.stream_id,
+                        }, existing));
+
+                        if stream.name.as_bytes() == name_bytes {
+                            return Ok(())
+                        }
+                    } else {
+                        self.device_requested_streams.insert(stream.name, ReadStreamInfo {
+                            read_size: stream.size,
+                            id: stream.stream_id,
+                        });
+                    }
+                }
+                EventType::CreateStreamResp => {
+                    if let Some(existing) = self.device_requested_streams.remove(&stream.name) {
+                        let (host_requested, _) = self.requested_streams.remove(&stream.name).unwrap();
+
+                        self.created_streams.insert(stream.name, (existing, host_requested));
+
+                        if stream.name.as_bytes() == name_bytes {
+                            return Ok(())
+                        }
+                    } else {
+                        let (_, acked) = self.requested_streams.get_mut(&stream.name).unwrap();
+                        *acked = true;
+                    }
+                }
+
+                _ => continue,
+            }
+        }
+
+        Ok(())
+    }
+}
+
+impl IpDevice {
     const SOCKET_PORT: u16 = 11490;
-    async fn connect(&self) -> std::io::Result<tokio::net::TcpStream> {
+    async fn connect(&self) -> std::io::Result<Connection> {
         let sock = tokio::net::TcpSocket::new_v4()?;
         sock.set_reuseaddr(true)?;
         sock.set_nodelay(true)?;
@@ -155,12 +507,300 @@ impl IpDevice {
         let port = self.port.unwrap_or(Self::SOCKET_PORT);
         let stream = sock.connect((self.addr, port).into()).await?;
 
-        Ok(stream)
+        Ok(Connection {
+            inner: stream,
+            requested_streams: Default::default(),
+            device_requested_streams: Default::default(),
+            created_streams: Default::default(),
+            next_stream_id: 0,
+        })
+    }
+
+    async fn boot(self, firmware: &[u8]) -> std::io::Result<Self> {
+        match self.state {
+            DeviceState::Booted => Ok(self),
+            DeviceState::Bootloader | DeviceState::FlashBooted => {
+                use tokio::io::AsyncWriteExt;
+
+                /*
+                let mut stream = self.connect().await?;
+
+
+
+                // get bootloader type
+                {
+                    use tokio::io::AsyncReadExt;
+                    let req = bootloader::request::Command::GetBootloaderType as u32;
+                    let bytes = bytemuck::bytes_of(&req);
+                    println!("sending");
+                    stream.write(&bytes).await.unwrap();
+
+                    let mut res = [0; 8];
+
+                    println!("reading");
+                    stream.read(&mut res).await?;
+
+                    todo!("{res:?}");
+                }
+
+
+
+
+                let len = firmware.len() as u32;
+
+                let cmd = bootloader::request::BootMemory {
+                    val: bootloader::request::Command::BootMemory as u32,
+                    total_size: len,
+                    num_packets: ((len - 1) / bootloader::MAX_PACKET_SIZE) + 1,
+                };
+
+
+                // send request
+                {
+                    let send_buf = bytemuck::bytes_of(&cmd);
+                    stream.write(send_buf).await?;
+                }
+
+                for bytes in firmware.chunks(bootloader::MAX_PACKET_SIZE as usize) {
+                    stream.write(bytes).await?;
+                }
+                */
+
+                loop {
+
+                }
+
+
+
+                todo!()
+
+                // gotta bootBootloader
+                //
+            }
+            s => todo!("boot from {s:?}"),
+        }
     }
 }
 
+const MAX_STREAM_NAME_LEN: usize = 52;
+
 #[derive(Clone, Copy)]
-#[repr(u8)]
+#[repr(C, )]
+struct EventHeader {
+    id: u32,
+    ty: u32,
+    name: StreamName,
+    nsec: u32,
+    sec_lsb: u32,
+    sec_msb: u32,
+    stream_id: u32,
+    size: u32,
+    flags: u32,
+}
+
+impl core::fmt::Debug for EventHeader {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let ty = EventType::try_from(self.ty);
+        let time = {
+            let secs = (self.sec_lsb as u64) | ((self.sec_msb as u64) << 32);
+            let duration = std::time::Duration::new(secs, self.nsec);
+
+            std::time::SystemTime::UNIX_EPOCH.checked_add(duration)
+        };
+
+        f.debug_struct("EventHeader")
+            .field("id", &self.id)
+            .field("ty", &ty)
+            .field("name", &self.name)
+            .field("time", &time)
+            .field("stream_id", &self.stream_id)
+            .field("size", &self.size)
+            .field("flags", &self.flags)
+            .finish()
+    }
+}
+
+unsafe impl bytemuck::Pod for EventHeader {}
+unsafe impl bytemuck::Zeroable for EventHeader {}
+
+struct Event<T> {
+    header: EventHeader,
+    data: T,
+}
+
+//TODO: make this more sealed (eg. supertrait w these)
+impl <T: bytemuck::Pod + bytemuck::Zeroable> Event<T> {
+    fn new(data: T, name: &[u8], ty: u32, id: u32, stream_id: u32, flags: u32) -> Self {
+        let header = {
+            if name.len() > MAX_STREAM_NAME_LEN {
+                panic!()
+            }
+
+            let mut header_name = [0; MAX_STREAM_NAME_LEN];
+            header_name[..name.len()].copy_from_slice(name);
+
+            let ts = std::time::SystemTime::now().duration_since(std::time::SystemTime::UNIX_EPOCH).unwrap_or_default();
+
+            let size = bytemuck::bytes_of(&data).len() as u32;
+
+            let secs = ts.as_secs();
+            EventHeader {
+                id,
+                ty,
+                name: StreamName(header_name),
+                nsec: ts.subsec_nanos(),
+                sec_lsb: secs as u32,
+                sec_msb: (secs >> 32) as u32,
+                stream_id,
+                size,
+                flags,
+            }
+        };
+
+        Self {
+            header,
+            data,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Default, bytemuck::Zeroable, bytemuck::Pod)]
+#[repr(C)]
+struct Ping;
+
+impl Event<Ping> {
+    fn ping() -> Self {
+        Event::new(Ping, b"", EventType::PingReq as u32, 0, 0, 0)
+    }
+}
+
+#[derive(Clone, Copy, Default, bytemuck::Zeroable, bytemuck::Pod)]
+#[repr(C)]
+struct CreateStream;
+
+impl Event<CreateStream> {
+    fn create_stream<N: Borrow<[u8]>>(stream_id: u32, name: &N, write_size: u32, id: u32) -> Self {
+        let mut ev = Event::new(CreateStream, name.borrow(), EventType::CreateStreamReq as u32, id, stream_id, 0);
+        ev.header.size = write_size;
+        ev
+    }
+}
+
+#[derive(Clone, Copy, Default, bytemuck::Zeroable, bytemuck::Pod)]
+#[repr(C)]
+struct AckStream;
+
+impl Event<AckStream> {
+    fn acknowledge_stream<N: Borrow<[u8]>>(stream_id: u32, name: &N, write_size: u32, id: u32) -> Self {
+        let mut ev = Event::new(AckStream, name.borrow(), EventType::CreateStreamResp as u32, id, stream_id, 1);
+        ev.header.size = write_size;
+        ev
+    }
+}
+
+#[derive(Clone, Copy, Default, bytemuck::Zeroable, bytemuck::Pod)]
+#[repr(C)]
+struct AckReadRel;
+
+impl Event<AckReadRel> {
+    fn acknowledge_read_release<N: Borrow<[u8]>>(stream_id: u32, name: &N, size: u32, id: u32) -> Self {
+        let mut ev = Event::new(AckReadRel, name.borrow(), EventType::ReadRelResp as u32, id, stream_id, 1);
+        ev.header.size = size;
+        ev
+    }
+}
+
+#[derive(Clone, Copy, Default, bytemuck::Zeroable, bytemuck::Pod)]
+#[repr(C)]
+struct Write;
+
+impl Event<Write> {
+    fn write<N: Borrow<[u8]>>(stream_id: u32, name: &N, id: u32, data: &[u8]) -> Self {
+        let mut ev = Event::new(Write, name.borrow(), EventType::WriteReq as u32, id, stream_id, 0);
+        ev.header.size = data.len() as u32;
+        ev
+    }
+}
+
+
+#[derive(Debug, Clone, Copy)]
+#[repr(C)]
+enum EventType {
+    WriteReq,
+    ReadReq,
+    ReadRelReq,
+    CreateStreamReq,
+    CloseStreamReq,
+    PingReq,
+    ResetReq,
+
+    RequestLast,
+
+    WriteResp,
+    ReadResp,
+    ReadRelResp,
+    CreateStreamResp,
+    CloseStreamResp,
+    PingResp,
+    ResetResp,
+
+    RespLast,
+
+    IpcWriteReq,
+    IpcReadReq,
+    IpcCreateStreamReq,
+    IpcCloseStreamReq,
+
+    IpcWriteResp,
+    IpcReadResp,
+    IpcCreateStreamResp,
+    IpcCloseStreamResp,
+
+    ReadRelSpecReq,
+    ReadRelSpecResp,
+}
+
+impl TryFrom<u32> for EventType {
+    type Error = u32;
+    fn try_from(f: u32) -> Result<Self, Self::Error> {
+        Ok(match f {
+            0 => Self::WriteReq,
+            1 => Self::ReadReq,
+            2 => Self::ReadRelReq,
+            3 => Self::CreateStreamReq,
+            4 => Self::CloseStreamReq,
+            5 => Self::PingReq,
+            6 => Self::ResetReq,
+            7 => Self::RequestLast,
+            8 => Self::WriteResp,
+            9 => Self::ReadResp,
+            10 => Self::ReadRelResp,
+            11 => Self::CreateStreamResp,
+            12 => Self::CloseStreamResp,
+            13 => Self::PingResp,
+            14 => Self::ResetResp,
+            15 => Self::RespLast,
+
+            16 => Self::IpcWriteReq,
+            17 => Self::IpcReadReq,
+            18 => Self::IpcCreateStreamReq,
+            19 => Self::IpcCloseStreamReq,
+
+            20 => Self::IpcWriteResp,
+            21 => Self::IpcReadResp,
+            22 => Self::IpcCreateStreamResp,
+            23 => Self::IpcCloseStreamResp,
+
+            24 => Self::ReadRelSpecReq,
+            25 => Self::ReadRelSpecResp,
+            o => return Err(o)
+        })
+    }
+}
+
+// NOTE: if this is sent as a u8 then it will be inconsistent
+#[derive(Clone, Copy, Debug)]
+#[repr(u32)]
 enum HostCommand {
     NoCommand = 0,
     DeviceDiscover = 1,
@@ -169,9 +809,9 @@ enum HostCommand {
     DeviceDiscoveryEx = 4,
 }
 
-impl TryFrom<u8> for HostCommand {
-    type Error = u8;
-    fn try_from(f: u8) -> Result<Self, Self::Error> {
+impl TryFrom<u32> for HostCommand {
+    type Error = u32;
+    fn try_from(f: u32) -> Result<Self, Self::Error> {
         Ok(match f {
             0 => Self::NoCommand,
             1 => Self::DeviceDiscover,
@@ -186,14 +826,9 @@ impl TryFrom<u8> for HostCommand {
 #[derive(Clone, Copy, Default, bytemuck::Zeroable)]
 #[repr(C)]
 struct DeviceDiscoveryResponse {
-    command: u8,
+    command: u32,
     mxid: [u8; 32],
     state: u32,
-    // extended fields
-    protocol: u32,
-    platform: u32,
-    port_http: u16,
-    port_https: u16,
 }
 
 unsafe impl bytemuck::Pod for DeviceDiscoveryResponse {}
@@ -202,7 +837,7 @@ unsafe impl bytemuck::Pod for DeviceDiscoveryResponse {}
 #[derive(Clone, Copy, Default, bytemuck::Zeroable)]
 #[repr(C)]
 struct DeviceDiscoveryResponseExt {
-    command: u8,
+    command: u32,
     mxid: [u8; 32],
     state: u32,
     // extended fields
@@ -245,6 +880,166 @@ impl DeviceDiscoveryResponseExt {
 
     fn valid_device_discovery(&self, target: DeviceState) -> bool {
         let device_state = self.device_state();
-        (self.command == HostCommand::DeviceDiscover as u8) && (matches!(device_state, DeviceState::Any) || device_state == target)
+
+        (self.command == HostCommand::DeviceDiscover as u32) && (matches!(target, DeviceState::Any) || device_state == target)
+    }
+}
+
+const XLINK_MAX_PACKET_SIZE: usize = bootloader::MAX_PACKET_SIZE as usize;
+
+// this is stored in depthai-bootloader-shared
+pub mod bootloader {
+    pub const MAX_PACKET_SIZE: u32 = 5 * 1024 * 1024;
+    pub mod request {
+        #[repr(u32)]
+        #[derive(Clone, Copy)]
+        pub enum Command {
+            UsbRomBoot = 0,
+            BootApplication = 1,
+            UpdateFlash = 2,
+            GetBootloaderVersion = 3,
+            BootMemory = 4,
+            UpdateFlashEx = 5,
+            UpdateFlashEx2 = 6,
+            NoOp = 7,
+            GetBootloaderType = 8,
+            SetBootloaderConfig = 9,
+            GetBootloaderConfig = 10,
+            BootloaderMemory = 11,
+            GetBootloaderCommit = 12,
+            UpdateFlashBootHeader = 13,
+            ReadFlash = 14,
+            GetApplicationDetails = 15,
+            GetMemoryDetails = 16,
+            IsUserBootloader = 17,
+        }
+
+        #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+        #[repr(C)]
+        pub struct BootMemory {
+            pub val: u32,
+            pub total_size: u32,
+            pub num_packets: u32,
+        }
+    }
+
+    pub mod response {
+    }
+}
+
+enum IoEvent {
+    CreatedStream(StreamName, ReadStreamInfo, WriteStreamInfo),
+}
+
+enum DeviceEvent {
+    NormalEvent(EventHeader),
+    WriteEvent(EventHeader, Vec<u8>),
+}
+
+async fn io_thread(mut stream: tokio::net::TcpStream, io_evs: tokio::sync::mpsc::Sender<IoEvent>, mut device_evs: tokio::sync::mpsc::Receiver<DeviceEvent>) {
+
+    let mut recv_buf = [0; XLINK_MAX_PACKET_SIZE];
+    use tokio::io::AsyncReadExt;
+
+    let mut requested_streams = HashMap::new();
+    let mut device_requested_streams = HashMap::new();
+
+    use tokio::io::AsyncWriteExt;
+
+    loop {
+        tokio::select!{
+            res = stream.read(&mut recv_buf) => {
+                let Ok(len) = res else {
+                    panic!()
+                };
+
+                const HEADER_LEN: usize = core::mem::size_of::<EventHeader>();
+
+                if len < HEADER_LEN {
+                    panic!("too small");
+                }
+
+                let header_bytes = &recv_buf[..len];
+                let extra_bytes = &recv_buf[len..];
+
+                let header = bytemuck::from_bytes::<EventHeader>(header_bytes);
+
+                let Ok(ty) = EventType::try_from(header.ty) else {
+                    panic!("unknown event ty");
+                };
+
+                match ty {
+                    EventType::CreateStreamReq => {
+                        let ev = Event::acknowledge_stream(header.stream_id, &header.name, header.size, header.id);
+
+                        {
+                            let header_buf = bytemuck::bytes_of(&ev.header);
+                            stream.write(header_buf).await.unwrap();
+                        }
+
+                        fn requested_stream_finished(requested_streams: &mut HashMap<StreamName, (WriteStreamInfo, bool)> , name: &StreamName) -> Option<WriteStreamInfo> {
+                            let (info, acked) = requested_streams.get(name)?;
+
+                            if *acked {
+                                requested_streams.remove(name).map(|(info, _)| info)
+                            } else {
+                                None
+                            }
+                        }
+
+                        if let Some(existing) = requested_stream_finished(&mut requested_streams, &header.name) {
+                            io_evs.send(IoEvent::CreatedStream(header.name, ReadStreamInfo { read_size: header.size, id: header.stream_id}, existing));
+                        } else {
+                            device_requested_streams.insert(header.name, ReadStreamInfo {
+                                read_size: header.size,
+                                id: header.stream_id,
+                            });
+                        }
+                    }
+                    EventType::CreateStreamResp => {
+                        if let Some(existing) = device_requested_streams.remove(&header.name) {
+                            let (host_requested, _) = requested_streams.remove(&header.name).unwrap();
+
+                            io_evs.send(IoEvent::CreatedStream(header.name, existing, host_requested));
+                        } else {
+                            let (_, acked) = requested_streams.get_mut(&header.name).unwrap();
+                            *acked = true;
+                        }
+                    }
+                    EventType::ReadRelReq => {
+                        let ev = Event::acknowledge_read_release(header.stream_id, &header.name, header.size, header.id);
+
+                        {
+                            let header_buf = bytemuck::bytes_of(&ev.header);
+                            stream.write(header_buf).await.unwrap();
+                        }
+                    }
+                    EventType::WriteResp | EventType::ReadResp | EventType::ReadRelResp | EventType::ReadRelSpecResp | EventType::CloseStreamResp | EventType::PingResp => continue,
+
+                    t => println!("skipping event ty {t:?}"),
+                }
+            }
+            ev = device_evs.recv() => {
+                let Some(ev) = ev else {
+                    continue;
+                };
+
+                match ev {
+                    DeviceEvent::NormalEvent(ev) => {
+                        {
+                            let header_buf = bytemuck::bytes_of(&ev);
+                            stream.write(header_buf).await.unwrap();
+                        }
+                    }
+                    DeviceEvent::WriteEvent(ev, data) => {
+                        {
+                            let header_buf = bytemuck::bytes_of(&ev);
+                            stream.write(header_buf).await.unwrap();
+                        }
+                        stream.write(&data).await.unwrap();
+                    }
+                }
+            }
+        }
     }
 }
