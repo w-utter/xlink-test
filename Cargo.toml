@@ -7,7 +7,15 @@ edition = "2024"
 bytemuck = {version = "1.25", features = ["derive"]}
 
 tokio = {version = "1.51", features = ["full"]}
+tokio-stream = "0.1"
 
 getifaddrs = "0.6"
 
 memchr = "2.8"
+
+smallvec = "1.15"
+
+astral-tokio-tar = "0.6"
+xz = "0.1"
+
+iter-chunks = "0.3"

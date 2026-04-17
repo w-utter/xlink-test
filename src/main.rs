@@ -1,10 +1,67 @@
 use tokio::sync::mpsc;
 
+async fn unpack_tarball(bytes: &[u8]) -> std::io::Result<tokio_tar::Entries<std::io::Cursor<Vec<u8>>>> {
+    let xc_buf = {
+        let mut xc_buf = vec![];
+        let mut tar = xz::read::XzDecoder::new(bytes);
+        use std::io::Read;
+        tar.read_to_end(&mut xc_buf)?;
+        xc_buf
+    };
+
+    let mut archive = tokio_tar::Archive::new(std::io::Cursor::new(xc_buf));
+    archive.entries()
+}
+
+
+
 #[tokio::main]
 async fn main() {
+    let bootloader_firmware = include_bytes!("firmware/depthai-bootloader-fwp-0.0.28.tar.xz");
+    let device_firmware = include_bytes!("firmware/depthai-device-fwp-747b3781a390caf3e0e2e78a77f201b0fd3fc22a.tar.xz");
+    // TODO: properly decompress this from the device_firmware
+    let device_firmware_buf = include_bytes!("firmware/depthai-device-openvino-universal-747b3781a390caf3e0e2e78a77f201b0fd3fc22a.cmd");
+
+    let mut bootloader_firmware_entries = unpack_tarball(bootloader_firmware).await.unwrap();
+
+    use tokio_stream::StreamExt;
+    while let Some(entry) = bootloader_firmware_entries.next().await {
+        //println!("{entry:?}");
+    }
+    //println!("max: {}", bootloader::MAX_PACKET_SIZE);
+
+    let mut device_firmware_entries = unpack_tarball(device_firmware).await.unwrap();
+
+    let mut device_firmware = None;
+
+    while let Some(entry) = device_firmware_entries.next().await {
+        let Ok(entry) = entry else {
+            continue;
+        };
+        let Ok(path) = entry.path() else {
+            continue;
+        };
+
+        let path: &std::ffi::OsStr = (&*path).as_ref();
+        use std::os::unix::ffi::OsStrExt;
+        let path = path.as_bytes();
+
+        if path.starts_with(b"depthai-device-openvino-universal") {
+            device_firmware = Some(entry);
+        }
+    }
+
+    let Some(mut device_firmware) = device_firmware else {
+        panic!();
+    };
+
+    device_firmware.set_unpack_xattrs(true);
+    device_firmware.set_preserve_permissions(true);
+
     let ctx = SearchCtx::new().await.unwrap();
 
     let mut devs = vec![];
+
 
     loop {
         devs = ctx.search_ip(SearchParams::default()).await.unwrap();
@@ -29,133 +86,86 @@ async fn main() {
         println!("starting");
 
         connection.create_stream("__bootloader", bootloader::MAX_PACKET_SIZE).await.unwrap();
-        connection.wait_for_stream("__bootloader").await;
-
         connection.create_stream("__watchdog", 64).await.unwrap();
+
+        connection.wait_for_stream("__bootloader").await;
         connection.wait_for_stream("__watchdog").await;
 
         println!("got streams: {:?}", connection.created_streams);
 
         connection.create_watchdog(1, std::time::Duration::from_millis(2000)).await;
 
-        loop {
+        //tokio::time::sleep(std::time::Duration::from_secs(1)).await;
 
+        // bootloader
+        let bytes = {
+            let data = bootloader::request::Command::GetBootloaderType as u32;
+            let data_buf = bytemuck::bytes_of(&data).to_vec();
+            let write = Event::write(0, b"__bootloader", &data_buf);
+            connection.send_write_event(write, data_buf).await.unwrap();
+            connection.wait_for_read(0).await
+        };
+        let bootloader = bytemuck::from_bytes::<bootloader::response::BootloaderType>(&bytes);
+        println!("bootloader: {bootloader:?}");
+
+        let Ok(ty) = bootloader.ty() else {
+            panic!()
+        };
+
+        /* the actual impl does not boot the firmware in the current config
+        {
+            let len = firmware.len() as u32;
+            let boot_memory = bootloader::request::BootMemory::new(len, ((len - 1) / bootloader::MAX_PACKET_SIZE) + 1);
+            let data_buf = bytemuck::bytes_of(&boot_memory).to_vec();
+            let write = Event::write(0, b"__bootloader", &data_buf);
+            connection.send_write_event(write, data_buf).await.unwrap();
+            connection.send_bulk_write(firmware, 0, StreamName::new(b"__bootloader").unwrap(), XLINK_MAX_PACKET_SIZE).await;
+        }
+        */
+
+        println!("booting firmware");
+        {
+            let len = device_firmware_buf.len() as u32;
+            let boot_memory = bootloader::request::BootMemory::new(len, ((len - 1) / bootloader::MAX_PACKET_SIZE) + 1);
+            let data_buf = bytemuck::bytes_of(&boot_memory).to_vec();
+            let write = Event::write(0, b"__bootloader", &data_buf);
+            connection.send_write_event(write, data_buf).await.unwrap();
+            connection.send_bulk_write(device_firmware_buf.to_vec(), 0, StreamName::new(b"__bootloader").unwrap(), XLINK_MAX_PACKET_SIZE).await;
         }
 
+        connection.wait_for_shutdown().await;
+        tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+        println!("shutdown");
 
-
-        
-        /*
-        use tokio::io::AsyncReadExt;
-        let len = connection.inner().read(&mut read_buf).await.unwrap();
-        println!("ping received {len:?}");
-        let buf = &read_buf[..len];
-
-        let ping = bytemuck::from_bytes::<EventHeader>(buf);
-        println!("{ping:?}");
-
-
-
-
-
-        //NOTE: watchdog has a timeout where it just sends 4 empty bytes to keepalive the device
-        // - needs to be sent every 4000 ms
-
-        println!("self: {connection:?}");
-
-        let mut interval = tokio::time::interval(std::time::Duration::from_millis(2000));
-
-        let mut buf = [0; 128];
-
-        let mut id = 1000;
-
-        let data = bootloader::request::Command::GetBootloaderType as u32;
-        let data_buf = bytemuck::bytes_of(&data);
-        let write = Event::write(0, b"__bootloader", 1000, data_buf);
-
-        use tokio::io::AsyncWriteExt;
-        connection.send_event(write).await.unwrap();
-        connection.inner().write(data_buf).await.unwrap();
-
+        let mut devs = vec![];
         loop {
-            tokio::select! {
-                _ = interval.tick() => {
-                    use tokio::io::AsyncWriteExt;
-                    let data = &[0, 0, 0, 0];
-                    connection.send_event(Event::write(1, b"__watchdog", id, data)).await.unwrap();
-                    connection.inner().write(data).await.unwrap();
-
-                    id += 1;
-                }
-                res = connection.inner().read(&mut buf) => {
-                    let len = res.unwrap();
-                    let buf = &buf[..core::cmp::min(len, core::mem::size_of::<EventHeader>())];
-
-                    if len < core::mem::size_of::<EventHeader>() {
-                        continue;
-                    }
-
-
-                    let stream = bytemuck::from_bytes::<EventHeader>(buf);
-
-                    let Ok(ty) = EventType::try_from(stream.ty) else {
-                        continue;
-                    };
-
-                    println!("{stream:?} ({len:?})");
-
-                    match ty {
-                        EventType::ReadRelReq => {
-                            connection.send_event(Event::acknowledge_read_release(stream.stream_id, &stream.name, stream.size, stream.id)).await.unwrap();
-
-                        }
-                        _ => (),
-                    }
-                }
+            devs = ctx.search_ip(SearchParams::default()).await.unwrap();
+            if !devs.is_empty() {
+                break;
             }
         }
-        */
 
-        //connection.send_event(Event::create_stream(0, b"__bootloader", bootloader::MAX_PACKET_SIZE, 100)).await.unwrap();
+        println!("{devs:?}");
+        connection = dev.connect().await.unwrap();
 
-        //connection.send_event(Event::create_stream(1, b"__watchdog", 64, 101)).await.unwrap();
+        connection.send_event(Event::ping()).await.unwrap();
+        connection.wait_for_pong().await;
 
-        /*
+        connection.create_stream("__watchdog", 64).await.unwrap();
+        connection.create_stream("__rpc_main", 64).await.unwrap();
+        connection.create_stream("__log", 64).await.unwrap();
+
+        connection.wait_for_stream("__watchdog").await;
+        connection.wait_for_stream("__rpc_main").await;
+        connection.wait_for_stream("__log").await;
+
+        println!("got streams: {:?}", connection.created_streams);
+
+        connection.create_watchdog(0, std::time::Duration::from_millis(2000)).await;
+
         loop {
-            let len = connection.inner().read(&mut read_buf).await.unwrap();
-            println!("stream 1 received {len:?}");
-            let buf = &read_buf[..core::cmp::min(len, core::mem::size_of::<EventHeader>())];
 
-            let stream = bytemuck::from_bytes::<EventHeader>(buf);
-            println!("device response: {stream:?}");
-
-            let Ok(ty) = EventType::try_from(stream.ty) else {
-                continue;
-            };
-
-            match ty {
-                EventType::CreateStreamReq => {
-                    println!("sending ack");
-                    connection.send_event(Event::acknowledge_stream(stream.stream_id, &stream.name.0, stream.size, stream.id)).await.unwrap();
-                }
-                _ => continue,
-            }
         }
-        */
-
-        /*
-
-        let len = connection.inner().read(&mut read_buf).await.unwrap();
-        println!("stream 2 received {len:?}");
-        let buf = &read_buf[..len];
-
-        let stream2 = bytemuck::from_bytes::<EventHeader>(buf);
-        println!("{stream2:?}");
-
-        //let _ = dev.boot(&firmware).await.unwrap();
-        //let stream = dev.connect().await.unwrap();
-        */
-        //println!("connected")
     }
 }
 
@@ -343,7 +353,7 @@ struct WriteStreamInfo {
 
 #[derive(Clone, Copy)]
 #[repr(transparent)]
-struct StreamName([u8; MAX_STREAM_NAME_LEN]);
+struct StreamName([u8; StreamName::MAX_LEN]);
 
 impl core::cmp::PartialEq for StreamName {
     fn eq(&self, other: &Self) -> bool {
@@ -371,6 +381,21 @@ impl StreamName {
     fn as_bytes(&self) -> &[u8] {
         let len = memchr::memchr(0, &self.0).unwrap_or(self.0.len());
         &self.0[..len]
+    }
+
+    const MAX_LEN: usize = 52;
+
+    fn new<N: Borrow<[u8]>>(name: &N) -> Option<Self> {
+        let name = name.borrow();
+
+        if name.len() > Self::MAX_LEN {
+            panic!()
+        }
+
+        let mut header_name = [0; Self::MAX_LEN];
+        header_name[..name.len()].copy_from_slice(name);
+
+        Some(Self(header_name))
     }
 }
 
@@ -423,6 +448,10 @@ impl Connection {
     async fn send_write_event<T: bytemuck::Pod + bytemuck::Zeroable>(&mut self, ev: Event<T>, data: Vec<u8>) -> std::io::Result<()> {
         self.device_events.send(DeviceEvent::WriteEvent(ev.header, data)).await.unwrap();
             Ok(())
+    }
+
+    async fn send_bulk_write(&mut self, data: Vec<u8>, stream_id: u32, name: StreamName, split_by: usize) {
+        self.device_events.send(DeviceEvent::BulkWriteEvent{ data, stream_id, name, split_by }).await.unwrap();
     }
 
     /*
@@ -575,6 +604,35 @@ impl Connection {
             }
         }
     }
+
+    async fn wait_for_read(&mut self, id: u32) -> Vec<u8> {
+        loop {
+            let Some(ev) = self.io_events.recv().await else {
+                panic!()
+            };
+
+            match ev {
+                IoEvent::DeviceRead(stream, bytes) if stream == id => {
+                    self.device_events.send(DeviceEvent::ReadRelease{ stream_id: stream, size: bytes.len() as _}).await.unwrap();
+                    return bytes
+                }
+                o => panic!("{o:?}")
+            }
+        }
+    }
+
+    async fn wait_for_shutdown(&mut self) {
+        loop {
+            let Some(ev) = self.io_events.recv().await else {
+                panic!()
+            };
+
+            match ev {
+                IoEvent::Shutdown => return,
+                o => panic!("{o:?}"),
+            }
+        }
+    }
 }
 
 impl IpDevice {
@@ -583,6 +641,11 @@ impl IpDevice {
         let sock = tokio::net::TcpSocket::new_v4()?;
         sock.set_reuseaddr(true)?;
         sock.set_nodelay(true)?;
+        let size = sock.send_buffer_size()?;
+        println!("tcp stream send buf size: {size}");
+        sock.set_send_buffer_size(bootloader::MAX_PACKET_SIZE)?;
+        let size = sock.send_buffer_size()?;
+        println!("set send buf size to: {size}");
 
         let port = self.port.unwrap_or(Self::SOCKET_PORT);
         let stream = sock.connect((self.addr, port).into()).await?;
@@ -676,7 +739,6 @@ impl IpDevice {
     }
 }
 
-const MAX_STREAM_NAME_LEN: usize = 52;
 
 #[derive(Clone, Copy)]
 #[repr(C, )]
@@ -726,12 +788,8 @@ struct Event<T> {
 impl <T: bytemuck::Pod + bytemuck::Zeroable> Event<T> {
     fn new(data: T, name: &[u8], ty: u32, stream_id: u32, flags: u32) -> Self {
         let header = {
-            if name.len() > MAX_STREAM_NAME_LEN {
-                panic!()
-            }
-
-            let mut header_name = [0; MAX_STREAM_NAME_LEN];
-            header_name[..name.len()].copy_from_slice(name);
+            // FIXME: make this propagate
+            let name = StreamName::new(&name).unwrap();
 
             let ts = std::time::SystemTime::now().duration_since(std::time::SystemTime::UNIX_EPOCH).unwrap_or_default();
 
@@ -741,7 +799,7 @@ impl <T: bytemuck::Pod + bytemuck::Zeroable> Event<T> {
             EventHeader {
                 id: 0,
                 ty,
-                name: StreamName(header_name),
+                name,
                 nsec: ts.subsec_nanos(),
                 sec_lsb: secs as u32,
                 sec_msb: (secs >> 32) as u32,
@@ -817,6 +875,32 @@ impl Event<Write> {
         ev
     }
 }
+
+#[derive(Clone, Copy, Default, bytemuck::Zeroable, bytemuck::Pod)]
+#[repr(C)]
+struct WriteAck;
+
+impl Event<WriteAck> {
+    fn acknowledge_write<N: Borrow<[u8]>>(stream_id: u32, name: &N, len: u32, id: u32) -> Self {
+        let mut ev = Event::new(WriteAck, name.borrow(), EventType::WriteResp as u32, stream_id, 1);
+        ev.header.size = len;
+        ev.header.id = id;
+        ev
+    }
+}
+
+#[derive(Clone, Copy, Default, bytemuck::Zeroable, bytemuck::Pod)]
+#[repr(C)]
+struct ReadRelease;
+
+impl Event<ReadRelease> {
+    fn read_release<N: Borrow<[u8]>>(stream_id: u32, name: &N, len: u32) -> Self {
+        let mut ev = Event::new(ReadRelease, name.borrow(), EventType::ReadRelReq as u32, stream_id, 1);
+        ev.header.size = len;
+        ev
+    }
+}
+
 
 
 #[derive(Debug, Clone, Copy)]
@@ -985,7 +1069,8 @@ const XLINK_MAX_PACKET_SIZE: usize = bootloader::MAX_PACKET_SIZE as usize;
 
 // this is stored in depthai-bootloader-shared
 pub mod bootloader {
-    pub const MAX_PACKET_SIZE: u32 = 5 * 1024 * 1024;
+    //pub const MAX_PACKET_SIZE: u32 = 5 * 1024 * 1024;
+    pub const MAX_PACKET_SIZE: u32 = 1024 * 400;
     pub mod request {
         #[repr(u32)]
         #[derive(Clone, Copy)]
@@ -1017,9 +1102,99 @@ pub mod bootloader {
             pub total_size: u32,
             pub num_packets: u32,
         }
+
+        impl BootMemory {
+            pub fn new(total_size: u32, num_packets: u32) -> Self {
+                Self {
+                    val: Command::BootMemory as u32,
+                    total_size,
+                    num_packets,
+                }
+            }
+        }
     }
 
     pub mod response {
+        #[repr(u32)]
+        #[derive(Clone, Copy, Debug)]
+        pub enum Command {
+            FlashComplete = 0,
+            FlashStatusUpdate = 1,
+            BootloaderVersion = 2,
+            BootloaderType = 3,
+            GetBootloaderConfig = 4,
+            BootloaderMemory = 5,
+            BootApplication = 6,
+            BootloaderCommit = 7,
+            ReadFlash = 8,
+            ApplicationDetails = 9,
+            MemoryDetails = 10,
+            IsUserBootloader = 11,
+            NoOp = 12,
+        }
+
+        impl TryFrom<u32> for Command {
+            type Error = u32;
+            fn try_from(this: u32) -> Result<Self, Self::Error> {
+                Ok(match this {
+                    0 => Self::FlashComplete,
+                    1 => Self::FlashStatusUpdate,
+                    2 => Self::BootloaderVersion,
+                    3 => Self::BootloaderType,
+                    4 => Self::GetBootloaderConfig,
+                    5 => Self::BootloaderMemory,
+                    6 => Self::BootApplication,
+                    7 => Self::BootloaderCommit,
+                    8 => Self::ReadFlash,
+                    9 => Self::ApplicationDetails,
+                    10 => Self::MemoryDetails,
+                    11 => Self::IsUserBootloader,
+                    12 => Self::NoOp,
+                    o => return Err(o),
+                })
+            }
+        }
+
+        #[derive(Clone, Copy, Default, bytemuck::Zeroable, bytemuck::Pod)]
+        #[repr(C)]
+        pub struct BootloaderType {
+            command: u32,
+            ty: u32,
+        }
+
+        impl BootloaderType {
+            pub fn ty(&self) -> Result<BootloaderTy, u32> {
+                BootloaderTy::try_from(self.ty)
+            }
+        }
+
+        #[derive(Debug)]
+        pub enum BootloaderTy {
+            Usb = 0,
+            Network = 1,
+        }
+
+        impl TryFrom<u32> for BootloaderTy {
+            type Error = u32;
+            fn try_from(this: u32) -> Result<Self, Self::Error> {
+                Ok(match this {
+                    0 => Self::Usb,
+                    1 => Self::Network,
+                    o => return Err(o),
+                })
+            }
+        }
+
+        impl core::fmt::Debug for BootloaderType {
+            fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                let cmd = Command::try_from(self.command);
+                let ty = BootloaderTy::try_from(self.ty);
+                f.debug_struct("BootloaderType")
+                    .field("command", &cmd)
+                    .field("type", &ty)
+                    .finish()
+            }
+        }
     }
 }
 
@@ -1027,6 +1202,8 @@ pub mod bootloader {
 enum IoEvent {
     Pong,
     CreatedStream(StreamName, ReadStreamInfo, WriteStreamInfo),
+    DeviceRead(u32, Vec<u8>),
+    Shutdown,
 }
 
 enum DeviceEvent {
@@ -1035,12 +1212,23 @@ enum DeviceEvent {
     WriteEvent(EventHeader, Vec<u8>),
     // stream id, watchdog interval
     CreateWatchDog(u32, std::time::Duration),
+    BulkWriteEvent {
+        data: Vec<u8>,
+        stream_id: u32,
+        name: StreamName,
+        split_by: usize,
+    },
+    ReadRelease {
+        stream_id: u32,
+        size: u32,
+    }
 }
 
 
 async fn io_thread(mut stream: tokio::net::TcpStream, io_evs: mpsc::Sender<IoEvent>, mut device_evs: mpsc::Receiver<DeviceEvent>) {
 
-    let mut recv_buf = [0; 2048];
+    let mut header_buf = [0; 128];
+
     use tokio::io::AsyncReadExt;
 
     let mut requested_streams = HashMap::new();
@@ -1052,8 +1240,14 @@ async fn io_thread(mut stream: tokio::net::TcpStream, io_evs: mpsc::Sender<IoEve
 
     let mut watchdog = None::<(u32, tokio::time::Interval)>;
 
+    //let mut pending_chunks = HashMap::<u32, Chunks<u8>>::new();
+    let mut pending_chunks = Vec::<(u32, Chunks<u8>)>::new();
 
     loop {
+        if let Some(err) = stream.take_error().unwrap() {
+            panic!("{err:?}");
+        }
+
         let mut watchdog_task = async {
             if let Some((stream, interval)) = watchdog.as_mut() {
                 interval.tick().await;
@@ -1064,28 +1258,134 @@ async fn io_thread(mut stream: tokio::net::TcpStream, io_evs: mpsc::Sender<IoEve
             }
         };
 
-
+        const HEADER_LEN: usize = core::mem::size_of::<EventHeader>();
+        let mut readable = (&mut stream).take(HEADER_LEN as _);
 
         tokio::select!{
-            res = stream.read(&mut recv_buf) => {
-                let Ok(len) = res else {
-                    panic!()
+            biased;
+
+            stream_id = watchdog_task => {
+                println!("sending wd");
+                let data = [0, 0, 0, 0];
+                let mut ev = Event::write(stream_id, b"", &data);
+                ev.header.id = id;
+
+                {
+                    let header_buf = bytemuck::bytes_of(&ev.header);
+                    stream.write(header_buf).await.unwrap();
+                }
+                stream.write(&data).await.unwrap();
+                stream.flush().await.unwrap();
+                id += 1;
+            }
+            ev = device_evs.recv() => {
+                let Some(ev) = ev else {
+                    continue;
                 };
 
-                const HEADER_LEN: usize = core::mem::size_of::<EventHeader>();
+                match ev {
+                    DeviceEvent::NormalEvent(mut ev) => {
+                        ev.id = id;
+                        {
+                            let header_buf = bytemuck::bytes_of(&ev);
+                            stream.write(header_buf).await.unwrap();
+                            stream.flush().await.unwrap();
+                        }
+                        id += 1;
+                    }
+                    DeviceEvent::WriteEvent(mut ev, data) => {
+                        ev.id = id;
+                        {
+                            let header_buf = bytemuck::bytes_of(&ev);
+                            stream.write(header_buf).await.unwrap();
+                        }
+                        stream.write(&data).await.unwrap();
+                        stream.flush().await.unwrap();
+                        id += 1;
+                    }
+                    DeviceEvent::CreateStream(mut ev) => {
+                        requested_streams.insert(ev.name, (WriteStreamInfo { write_size: ev.size, id: ev.stream_id }, false));
 
-                if len < HEADER_LEN {
+                        ev.id = id;
+                        {
+                            let header_buf = bytemuck::bytes_of(&ev);
+                            stream.write(header_buf).await.unwrap();
+                            stream.flush().await.unwrap();
+                        }
+                        id += 1;
+                    }
+                    DeviceEvent::CreateWatchDog(stream_id, period) => {
+                        watchdog = Some((stream_id, tokio::time::interval(period)));
+                    }
+                    DeviceEvent::BulkWriteEvent {
+                        data,
+                        stream_id,
+                        split_by,
+                        name,
+                    } => {
+                        println!("inserting pending");
+                        pending_chunks.push((stream_id, Chunks::new(data, split_by)));
+                        //pending_chunks.insert(stream_id, );
+
+                        /*
+                        for bytes in data.chunks(split_by) {
+                            let mut ev = Event::write(stream_id, &name, bytes);
+                            println!("sending: {}", bytes.len());
+                            ev.header.id = id;
+                            {
+                                let header_buf = bytemuck::bytes_of(&ev.header);
+                                stream.write(header_buf).await.unwrap();
+                            }
+                            stream.write(bytes).await.unwrap();
+                            id += 1;
+                            tokio::time::sleep(std::time::Duration::from_millis(100)).await
+                        }
+                        */
+                    }
+                    DeviceEvent::ReadRelease {
+                        stream_id,
+                        size,
+                    } => {
+                        let mut ev = Event::read_release(stream_id, b"", size);
+                        ev.header.id = id;
+                        {
+                            let header_buf = bytemuck::bytes_of(&ev.header);
+                            stream.write(header_buf).await.unwrap();
+                            stream.flush().await.unwrap();
+                        }
+                        id += 1;
+                    }
+                }
+            }
+            res = readable.read(&mut header_buf) => {
+                let len = match res {
+                    Ok(len) => len,
+                    Err(e) => {
+                        if matches!(e.kind(), std::io::ErrorKind::ConnectionReset) {
+                            io_evs.send(IoEvent::Shutdown).await.unwrap();
+                            return;
+                        } else {
+                            panic!("{e:?}");
+                        }
+                    }
+                };
+
+                if len == 0 {
+                    io_evs.send(IoEvent::Shutdown).await.unwrap();
+                    return;
+                } else if len < HEADER_LEN {
                     panic!("too small");
                 }
 
-                let header_bytes = &recv_buf[..len];
-                let extra_bytes = &recv_buf[len..];
+                let (header_bytes, extra_bytes) = header_buf.split_at(HEADER_LEN);
 
                 let header = bytemuck::from_bytes::<EventHeader>(header_bytes);
 
                 let Ok(ty) = EventType::try_from(header.ty) else {
                     panic!("unknown event ty");
                 };
+
+                println!("received: {header:?} ({len:?})");
 
                 match ty {
                     EventType::CreateStreamReq => {
@@ -1094,6 +1394,7 @@ async fn io_thread(mut stream: tokio::net::TcpStream, io_evs: mpsc::Sender<IoEve
                         {
                             let header_buf = bytemuck::bytes_of(&ev.header);
                             stream.write(header_buf).await.unwrap();
+                            stream.flush().await.unwrap();
                         }
 
                         fn requested_stream_finished(requested_streams: &mut HashMap<StreamName, (WriteStreamInfo, bool)> , name: &StreamName) -> Option<WriteStreamInfo> {
@@ -1131,64 +1432,134 @@ async fn io_thread(mut stream: tokio::net::TcpStream, io_evs: mpsc::Sender<IoEve
                         {
                             let header_buf = bytemuck::bytes_of(&ev.header);
                             stream.write(header_buf).await.unwrap();
+                            stream.flush().await.unwrap();
+                        }
+
+                        //tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+                        if let Some((stream_id, chunks)) = pending_chunks.last_mut() {
+
+                            println!("got chunk");
+
+                            let Some(pending) = chunks.next() else {
+                                pending_chunks.pop();
+                                continue;
+                            };
+
+                            let mut ev = Event::write(*stream_id, b"", &pending);
+                            println!("sending: {}", pending.len());
+
+                            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                            println!("sending");
+
+                            ev.header.id = id;
+                            {
+                                let header_buf = bytemuck::bytes_of(&ev.header);
+                                stream.write(header_buf).await.unwrap();
+                            }
+                            stream.write(&pending).await.unwrap();
+                            stream.flush().await.unwrap();
+                            id += 1;
                         }
                     }
                     EventType::PingResp => io_evs.send(IoEvent::Pong).await.unwrap(),
-                    EventType::WriteResp | EventType::ReadResp | EventType::ReadRelResp | EventType::ReadRelSpecResp | EventType::CloseStreamResp => continue,
+                    EventType::WriteReq => {
+                        let mut read_buf = Vec::new();
+                        let mut readable = (&mut stream).take(header.size as _);
+
+                        let mut count = 0;
+                        loop {
+                            count += readable.read_buf(&mut read_buf).await.unwrap();
+
+                            if count as u32 == header.size {
+                                break;
+                            }
+                        }
+
+                        io_evs.send(IoEvent::DeviceRead(header.stream_id, read_buf)).await.unwrap();
+
+                        let ev = Event::acknowledge_write(header.stream_id, &header.name, header.size, header.id);
+
+                        {
+                            let header_buf = bytemuck::bytes_of(&ev.header);
+                            stream.write(header_buf).await.unwrap();
+                            stream.flush().await.unwrap();
+                        }
+                    }
+                    EventType::WriteResp => {
+                        println!("write resp received");
+                        if let Some((stream_id, chunks)) = pending_chunks.last_mut() {
+
+                            /*
+                            println!("got chunk");
+
+                            let Some(pending) = chunks.next() else {
+                                pending_chunks.pop();
+                                continue;
+                            };
+
+                            let mut ev = Event::write(*stream_id, b"", &pending);
+                            println!("sending: {}", pending.len());
+
+                            tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+                            println!("sending");
+
+                            ev.header.id = id;
+                            {
+                                let header_buf = bytemuck::bytes_of(&ev.header);
+                                stream.write(header_buf).await.unwrap();
+                            }
+                            stream.write(&pending).await.unwrap();
+                            stream.flush().await.unwrap();
+                            id += 1;
+                            */
+                        }
+                    }
+                    EventType::ReadResp | EventType::ReadRelResp | EventType::ReadRelSpecResp | EventType::CloseStreamResp => continue,
 
                     t => println!("skipping event ty {t:?}"),
                 }
             }
-            ev = device_evs.recv() => {
-                let Some(ev) = ev else {
-                    continue;
-                };
-
-                match ev {
-                    DeviceEvent::NormalEvent(mut ev) => {
-                        ev.id = id;
-                        {
-                            let header_buf = bytemuck::bytes_of(&ev);
-                            stream.write(header_buf).await.unwrap();
-                        }
-                        id += 1;
-                    }
-                    DeviceEvent::WriteEvent(mut ev, data) => {
-                        ev.id = id;
-                        {
-                            let header_buf = bytemuck::bytes_of(&ev);
-                            stream.write(header_buf).await.unwrap();
-                        }
-                        stream.write(&data).await.unwrap();
-                        id += 1;
-                    }
-                    DeviceEvent::CreateStream(mut ev) => {
-                        requested_streams.insert(ev.name, (WriteStreamInfo { write_size: ev.size, id: ev.stream_id }, false));
-
-                        ev.id = id;
-                        {
-                            let header_buf = bytemuck::bytes_of(&ev);
-                            stream.write(header_buf).await.unwrap();
-                        }
-                        id += 1;
-                    }
-                    DeviceEvent::CreateWatchDog(stream_id, period) => {
-                        watchdog = Some((stream_id, tokio::time::interval(period)));
-                    }
-                }
-            }
-            stream_id = watchdog_task => {
-                let data = [0, 0, 0, 0];
-                let mut ev = Event::write(stream_id, b"", &data);
-                ev.header.id = id;
-
-                {
-                    let header_buf = bytemuck::bytes_of(&ev.header);
-                    stream.write(header_buf).await.unwrap();
-                }
-                stream.write(&data).await.unwrap();
-                id += 1;
-            }
         }
     }
+}
+
+struct Chunks<T> {
+    iter: Vec<T>,
+    split_by: usize,
+    offset: usize,
+}
+
+impl <T> Chunks<T> {
+    fn new(iter: Vec<T>, split_by: usize) -> Self {
+        Self {
+            iter,
+            split_by,
+            offset: 0,
+        }
+    }
+
+    fn next(&mut self) -> Option<&[T]> {
+        if self.offset >= self.iter.len() {
+            return None;
+        }
+
+        let end = core::cmp::min(self.offset + self.split_by, self.iter.len());
+
+        let items = &self.iter[self.offset..end];
+        self.offset += self.split_by;
+        Some(items)
+    }
+}
+
+#[test]
+fn chunks() {
+    let vec = vec![1, 2, 3, 4, 5];
+
+    let mut chunks = Chunks::new(vec, 2);
+
+    assert_eq!(chunks.next(), Some(&[1, 2][..]));
+    assert_eq!(chunks.next(), Some(&[3, 4][..]));
+    assert_eq!(chunks.next(), Some(&[5][..]));
+    assert_eq!(chunks.next(), None);
 }
