@@ -198,7 +198,7 @@ async fn main() {
 
         let rpc_name = StreamName::new(b"__rpc_main").unwrap();
 
-        let mut rpc_stream = connection.created_streams.get_mut(&rpc_name).unwrap();
+        let mut rpc_stream = connection.created_streams.remove(&rpc_name).unwrap();
 
         // setup rpc
         // create a struct that borrows the stream
@@ -506,10 +506,27 @@ async fn main() {
                 serde_rmpv::from_value(&data).unwrap()
             }
 
+            async fn set_pipeline_schema(&mut self, schema: PipelineSchema) -> Result<rmpv::Value, rmpv::Value> {
+                let val = serde_rmpv::to_value(&schema).unwrap();
+                self.call_untyped("setPipelineSchema", [val].into_iter()).await
+            }
+
+            async fn wait_for_device_ready(&mut self) -> Result<rmpv::Value, rmpv::Value> {
+                self.call_untyped("waitForDeviceReady", [].into_iter()).await
+            }
+
+            async fn build_pipeline(&mut self) -> Result<rmpv::Value, rmpv::Value> {
+                self.call_untyped("buildPipeline", [].into_iter()).await
+            }
+
+            async fn start_pipeline(&mut self) -> Result<rmpv::Value, rmpv::Value> {
+                self.call_untyped("startPipeline", [].into_iter()).await
+            }
+
             //TODO: pipeline stuff (just more rpc calls)
         }
 
-        #[derive(serde_repr::Deserialize_repr, Debug, Hash, PartialEq, Eq)]
+        #[derive(serde_repr::Deserialize_repr, serde_repr::Serialize_repr, Debug, Hash, PartialEq, Eq)]
         #[repr(i32)]
         enum CameraBoardSocket {
             Auto = -1,
@@ -642,13 +659,19 @@ async fn main() {
             SuperPlus = 5,
         }
 
+        #[derive(serde_repr::Deserialize_repr, serde_repr::Serialize_repr, Debug)]
         #[repr(u8)]
         enum LogLevel {
-            A,
-            //TODO
+            Trace = 0,
+            Debug = 1,
+            Info = 2,
+            Warn = 3,
+            Error = 4,
+            Critical = 5,
+            Off = 6,
         }
 
-        #[derive(serde::Deserialize, Debug)]
+        #[derive(serde::Deserialize, serde::Serialize, Debug)]
         struct EepromData {
             version: u32,
             #[serde(rename = "productName")]
@@ -689,7 +712,7 @@ async fn main() {
             vertical_camera_socket: CameraBoardSocket,
         }
 
-        #[derive(serde::Deserialize, Debug)]
+        #[derive(serde::Deserialize, serde::Serialize, Debug)]
         struct StereoRectification {
             #[serde(rename = "rectifiedRotationLeft")]
             rectified_rotation_left: Vec<Vec<f32>>,
@@ -701,7 +724,7 @@ async fn main() {
             right_camera_socket: CameraBoardSocket,
         }
 
-        #[derive(serde::Deserialize, Debug)]
+        #[derive(serde::Deserialize, serde::Serialize, Debug)]
         struct CameraInfo {
             width: u16,
             height: u16,
@@ -718,7 +741,7 @@ async fn main() {
             ty: CameraModel,
         }
 
-        #[derive(serde_repr::Deserialize_repr, Debug)]
+        #[derive(serde_repr::Deserialize_repr, serde_repr::Serialize_repr, Debug)]
         #[repr(i8)]
         enum CameraModel {
             Perspective = 0,
@@ -727,7 +750,7 @@ async fn main() {
             RadialDivision = 3,
         }
 
-        #[derive(serde::Deserialize, Debug)]
+        #[derive(serde::Deserialize, serde::Serialize, Debug)]
         struct Extrinsics {
             #[serde(rename = "rotationMatrix")]
             rotation_mtx: Vec<Vec<f32>>,
@@ -738,7 +761,7 @@ async fn main() {
             to_camera_socket: CameraBoardSocket,
         }
 
-        #[derive(serde::Deserialize, Debug)]
+        #[derive(serde::Deserialize, serde::Serialize, Debug)]
         struct Point3f {
             x: f32,
             y: f32,
@@ -844,11 +867,132 @@ async fn main() {
             Dsp = 3,
         }
 
+        // below is for starting pipeline stuff
+
+        #[derive(serde::Deserialize, serde::Serialize, Debug)]
+        struct PipelineSchema {
+            connections: Vec<NodeConnectionSchema>,
+            #[serde(rename = "globalProperties")]
+            global_properties: GlobalProperties,
+            nodes: Vec<(i64, NodeObjInfo)>,
+            bridges: Vec<(i64, i64)>,
+        }
+
+        #[derive(serde::Deserialize, serde::Serialize, Debug, PartialEq, Eq)]
+        struct NodeConnectionSchema {
+            #[serde(rename = "node1Id")]
+            output_id: i64,
+            #[serde(rename = "node1OutputGroup")]
+            output_group: String,
+            #[serde(rename = "node1Output")]
+            output: String,
+            #[serde(rename = "node2Id")]
+            input_id: i64,
+            #[serde(rename = "node2InputGroup")]
+            input_group: String,
+            #[serde(rename = "node2Input")]
+            input: String,
+        }
+
+        #[derive(serde::Deserialize, serde::Serialize, Debug)]
+        struct GlobalProperties {
+            #[serde(rename = "leonCssFrequencyHz")]
+            leon_css_frequency_hz: f32,
+            #[serde(rename = "leonMssFrequencyHz")]
+            leon_mss_frequency_hz: f32,
+            #[serde(rename = "pipelineName")]
+            pipeline_name: Option<String>,
+            #[serde(rename = "pipelineVersion")]
+            pipeline_version: Option<String>,
+            #[serde(rename = "calibData")]
+            calibration: Option<EepromData>,
+            #[serde(rename = "eepromId")]
+            eeprom_id: Option<u32>,
+            #[serde(rename = "cameraTuningBlobSize")]
+            camera_tuning_blob_size: Option<u32>,
+            #[serde(rename = "cameraTuningBlobUri")]
+            camera_tuning_blob_uri: String,
+            #[serde(rename = "cameraSocketTuningBlobSize")]
+            camera_socket_tuning_blob_size: Vec<(CameraBoardSocket, u32)>,
+            #[serde(rename = "cameraSocketTuningBlobUri")]
+            camera_socket_tuning_blob_uri: Vec<(CameraBoardSocket, String)>,
+            #[serde(rename = "xlinkChunkSize")]
+            xlink_chunk_size: i32,
+            #[serde(rename = "sippBufferSize")]
+            sipp_buffer_size: u32,
+            #[serde(rename = "sippDmaBufferSize")]
+            sipp_dma_buffer_size: u32,
+        }
+
+        impl GlobalProperties {
+            const SIPP_BUFFER_DEFAULT_SIZE: u32 = 18 * 1024;
+            const SIPP_DMA_BUFFER_DEFAULT_SIZE: u32 = 16 * 1024;
+        }
+
+        #[derive(serde::Deserialize, serde::Serialize, Debug)]
+        struct NodeObjInfo {
+            id: i64,
+            #[serde(rename = "parentId")]
+            parent_id: i64,
+            name: String,
+            alias: String,
+            #[serde(rename = "deviceId")]
+            device_id: String,
+            #[serde(rename = "deviceNode")]
+            device_node: bool,
+            properties: Vec<u8>,
+            #[serde(rename = "logLevel")]
+            log_level: LogLevel,
+            #[serde(rename = "ioInfo")]
+            io_info: Vec<((String, String), NodeIoInfo)>,
+        }
+
+        #[derive(serde::Deserialize, serde::Serialize, Debug)]
+        struct NodeIoInfo {
+            group: String,
+            name: String,
+            #[serde(rename = "type")]
+            ty: NodeType,
+            blocking: bool,
+            #[serde(rename = "queueSize")]
+            queue_size: i32,
+            #[serde(rename = "waitForMessage")]
+            wait_for_message: bool,
+            id: u32,
+        }
+
+        #[derive(serde_repr::Deserialize_repr, serde_repr::Serialize_repr, Debug)]
+        #[repr(u8)]
+        enum NodeType {
+            MSender = 0,
+            SSender = 1,
+            MReceiver = 2,
+            SReceiver = 3,
+        }
+        // end of pipeline
+
+
+        // libnop encoded structs
+
+        #[derive(serde::Deserialize, Debug)]
+        struct SystemInfo {
+            ddr_memory_usage: MemoryInfo,
+            cmx_memory_usage: MemoryInfo,
+            leon_css_memory_usage: MemoryInfo,
+            leon_mss_memory_usage: MemoryInfo,
+            leon_css_cpu_usage: CpuUsage,
+            leon_mss_cpu_usage: CpuUsage,
+            chip_temperature: ChipTemperature,
+        }
+
+        //end of libnop type defines
+        
         let mut rpc = Rpc::new(&mut rpc_stream);
 
         let is_running = rpc.is_running().await;
         //let resp = rpc.call("isRunning", [].into_iter()).await;
 
+        /*
         println!("\n\nrpc response: {is_running:?}");
 
         let res = rpc.enable_crash_dump(true).await;
@@ -936,9 +1080,126 @@ async fn main() {
 
         let calibration2 = rpc.calibration2().await.unwrap();
         println!("calibration2: {calibration2:?}");
+        */
+
+        let schema = PipelineSchema {
+            bridges: vec![],
+            connections: vec![
+                NodeConnectionSchema {
+                    output_id: 0,
+                    output: "out".into(),
+                    output_group: "".into(),
+                    input_id: 1,
+                    input: "in".into(),
+                    input_group: "".into(),
+                },
+            ],
+            global_properties: GlobalProperties {
+                calibration: None,
+                camera_socket_tuning_blob_size: vec![],
+                camera_socket_tuning_blob_uri: vec![],
+                camera_tuning_blob_size: None,
+                camera_tuning_blob_uri: "".into(),
+                eeprom_id: Some(0),
+                leon_css_frequency_hz: 700000000.,
+                leon_mss_frequency_hz: 700000000.,
+                pipeline_name: None,
+                pipeline_version: None,
+                sipp_buffer_size: GlobalProperties::SIPP_BUFFER_DEFAULT_SIZE,
+                sipp_dma_buffer_size: GlobalProperties::SIPP_DMA_BUFFER_DEFAULT_SIZE,
+                xlink_chunk_size: -1,
+            },
+            nodes: vec![
+                (1, NodeObjInfo {
+                    alias: "".into(),
+                    device_id: "19443010A1A1872D00".into(),
+                    device_node: true,
+                    id: 1,
+                    io_info: vec![
+                        (("".into(), "pipelineEventOutput".into()), NodeIoInfo {
+                            blocking: false, 
+                            group: "".into(),
+                            id: 3,
+                            name: "pipelineEventOutput".into(),
+                            queue_size: 8,
+                            ty: NodeType::MSender,
+                            wait_for_message: false,
+                        }), 
+                        (("".into(), "in".into()), NodeIoInfo {
+                            blocking: true,
+                            group: "".into(),
+                            id: 2,
+                            name: "in".into(),
+                            queue_size: 3,
+                            ty: NodeType::SReceiver,
+                            wait_for_message: false,
+                        }),
+                    ],
+                    log_level: LogLevel::Trace,
+                    name: "XLinkOut".into(),
+                    parent_id: -1,
+                    properties: vec![185, 5, 136, 0, 0, 128, 191, 189, 9, 95, 95, 120, 95, 48, 95, 111, 117, 116, 0, 255, 255],
+                }),
+                (0, NodeObjInfo {
+                    alias: "".into(),
+                    device_id: "19443010A1A1872D00".into(),
+                    device_node: true,
+                    id: 0,
+                    io_info: vec![
+                        (("".into(), "out".into()), NodeIoInfo {
+                            blocking: false,
+                            group: "".into(),
+                            id: 1,
+                            name: "out".into(),
+                            queue_size: 8,
+                            ty: NodeType::MSender,
+                            wait_for_message: false,
+                        }),
+                        (("".into(), "pipelineEventOutput".into()), NodeIoInfo {
+                            blocking: false,
+                            group: "".into(),
+                            id: 0,
+                            name: "pipelineEventOutput".into(),
+                            queue_size: 8,
+                            ty: NodeType::MSender,
+                            wait_for_message: false,
+                        }),
+                    ],
+                    log_level: LogLevel::Trace,
+                    name: "SystemLogger".into(),
+                    parent_id: -1,
+                    properties: vec![185, 1, 136, 0, 0, 128, 63],
+                })
+            ]
+        };
+
+        connection.create_stream("__x_0_out", bootloader::MAX_PACKET_SIZE).await.unwrap();
+
+        let ret = rpc.set_pipeline_schema(schema).await;
+        println!("{ret:?}");
+
+        let ret = rpc.wait_for_device_ready().await;
+        println!("{ret:?}");
+
+        let ret = rpc.build_pipeline().await;
+        println!("{ret:?}");
+
+        let ret = rpc.start_pipeline().await;
+        println!("{ret:?}");
+
+        connection.wait_for_stream("__x_0_out").await;
+
+        let out_name = StreamName::new(&"__x_0_out".as_bytes()).unwrap();
+
+        let mut output = connection.created_streams.remove(&out_name).unwrap();
+        println!("xout: {output:?}");
 
         loop {
+            let mut bytes = output.read().await;
 
+            let val = rnop::Value::parse(&bytes).unwrap();
+            let val = rnop::from_value::<SystemInfo>(val).unwrap();
+            println!("\n{val:?}");
         }
     }
 }
@@ -1256,8 +1517,16 @@ impl ConnectionStream {
 
     async fn read(&mut self) -> Vec<u8> {
         let bytes = self.reader.recv().await.unwrap();
+        /*
         let ev = Event::read_release(self.read.id, b"", bytes.len() as _);
+
+        // the write id / read release id in the header need to be the same i think
+        //  - not the stream_id, but the actual id.
+
+
+
         self.writer.send(StreamEvent::ReadRelease(ev.header)).await.unwrap();
+        */
         bytes
     }
 }
@@ -1734,9 +2003,10 @@ impl Event<WriteAck> {
 struct ReadRelease;
 
 impl Event<ReadRelease> {
-    fn read_release<N: Borrow<[u8]>>(stream_id: u32, name: &N, len: u32) -> Self {
+    fn read_release<N: Borrow<[u8]>>(stream_id: u32, name: &N, len: u32, id: u32) -> Self {
         let mut ev = Event::new(ReadRelease, name.borrow(), EventType::ReadRelReq as u32, stream_id, 1);
         ev.header.size = len;
+        ev.header.id = id;
         ev
     }
 }
@@ -2249,8 +2519,6 @@ async fn io_thread(mut stream: tokio::net::TcpStream, io_evs: mpsc::Sender<IoEve
                             stream.flush().await.unwrap();
                         }
 
-                        //tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-
                         if let Some(IoStream { writer_fb, .. }) = created_streams.get_mut(&header.stream_id) {
                             writer_fb.notify_one();
                         } else {
@@ -2273,18 +2541,25 @@ async fn io_thread(mut stream: tokio::net::TcpStream, io_evs: mpsc::Sender<IoEve
 
                         if let Some(IoStream { reader, ..}) = created_streams.get_mut(&header.stream_id) {
                             reader.send(read_buf).await.unwrap();
+
+
+                            let ev = Event::acknowledge_write(header.stream_id, &header.name, header.size, header.id);
+
+                            {
+                                let header_buf = bytemuck::bytes_of(&ev.header);
+                                stream.write(header_buf).await.unwrap();
+                                stream.flush().await.unwrap();
+                            }
+
+                            let ev = Event::read_release(header.stream_id, &header.name, header.size, header.id);
+
+                            {
+                                let header_buf = bytemuck::bytes_of(&ev.header);
+                                stream.write(header_buf).await.unwrap();
+                                stream.flush().await.unwrap();
+                            }
                         } else {
                             panic!("could not find stream for {}", header.stream_id);
-                        }
-
-                        //io_evs.send(IoEvent::DeviceRead(header.stream_id, read_buf)).await.unwrap();
-
-                        let ev = Event::acknowledge_write(header.stream_id, &header.name, header.size, header.id);
-
-                        {
-                            let header_buf = bytemuck::bytes_of(&ev.header);
-                            stream.write(header_buf).await.unwrap();
-                            stream.flush().await.unwrap();
                         }
                     }
                     EventType::WriteResp | EventType::ReadResp | EventType::ReadRelResp | EventType::ReadRelSpecResp | EventType::CloseStreamResp => continue,
