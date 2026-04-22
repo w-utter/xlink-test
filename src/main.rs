@@ -204,790 +204,10 @@ async fn main() {
         // create a struct that borrows the stream
 
 
-        struct Rpc<'a> {
-            inner: &'a mut ConnectionStream,
-        }
+
 
         
-        impl <'a> Rpc<'a> {
-            fn new(stream: &'a mut ConnectionStream) -> Self {
-                Self {
-                    inner: stream,
-                }
-            }
-
-            // what a silly hash function
-            fn hash_method(method_name: &str) -> u64 {
-                let mut h: u64 = 1125899906842597;
-                for b in method_name.as_bytes() {
-                    h = h.wrapping_mul(31).wrapping_add(*b as u64);
-                }
-                h
-            }
-
-            const VERSION: u32 = 1;
-            const REQUEST: u32 = 1;
-            const RESPONSE: u32 = 2;
-
-            async fn call_untyped(&mut self, method: &str, params: impl Iterator<Item = rmpv::Value>) -> Result<rmpv::Value, rmpv::Value> {
-                let msg = rmpv::Value::Array([Self::VERSION.into(), Self::REQUEST.into(), Self::hash_method(method).into(), rmpv::Value::Array(params.collect())].into_iter().collect());
-
-                let mut data = vec![];
-                rmpv::encode::write_value(&mut data, &msg).unwrap();
-
-                let ev = Event::write(self.inner.write.id, b"", &data);
-
-                self.inner.write(ev, data).await;
-                let mut bytes = std::io::Cursor::new(self.inner.read().await);
-                let res = rmpv::decode::read_value(&mut bytes).unwrap();
-
-                let rmpv::Value::Array(mut items) = res else {
-                    panic!();
-                };
-
-                if items.len() == 3 {
-                    items.push(rmpv::Value::Nil);
-                }
-
-                let [version, msg_ty, status, res]: [rmpv::Value; 4] = items.try_into().unwrap();
-
-                if version != Self::VERSION.into() {
-                    panic!()
-                }
-
-                if msg_ty != Self::RESPONSE.into() {
-                    panic!()
-                }
-
-                if status == 1.into() {
-                    Ok(res)
-                } else if status == 0.into() {
-                    Err(res)
-                } else {
-                    panic!()
-                }
-            }
-
-            async fn call<T: serde::de::DeserializeOwned, E: serde::de::DeserializeOwned>(&mut self, method: &str, params: impl Iterator<Item = rmpv::Value>) -> Result<T, E> {
-                self.call_untyped(method, params).await.map(|o| serde_rmpv::from_value(&o).unwrap()).map_err(|e| serde_rmpv::from_value(&e).unwrap())
-            }
-
-            async fn is_running(&mut self) -> bool {
-                self.call::<_, String>("isRunning", [].into_iter()).await.unwrap()
-            }
-
-            async fn enable_crash_dump(&mut self, enable: bool) -> Result<(), String>{
-                self.call_untyped("enableCrashDump", [enable.into()].into_iter()).await.map_err(|e| serde_rmpv::from_value::<String>(&e).unwrap())?;
-                Ok(())
-            }
-
-            async fn mxid(&mut self) -> Result<String, String> {
-                self.call("getMxId", [].into_iter()).await
-            }
-
-            async fn connected_cameras(&mut self) -> Result<Vec<CameraBoardSocket>, String> {
-                self.call("getConnectedCameras", [].into_iter()).await
-            }
-
-            async fn connection_interfaces(&mut self) -> Result<Vec<ConnectionInterface>, String> {
-                self.call("getConnectionInterfaces", [].into_iter()).await
-            }
-
-            async fn connected_camera_features(&mut self) -> Result<Vec<CameraFeatures>, String> {
-                self.call("getConnectedCameraFeatures", [].into_iter()).await
-            }
-            /*
-            async fn connected_camera_features(&mut self) -> Result<rmpv::Value, rmpv::Value> {
-                self.call_untyped("getConnectedCameraFeatures", [].into_iter()).await
-            }
-            */
-
-            async fn stereo_pairs(&mut self) -> Result<Vec<StereoPair>, String> {
-                self.call("getStereoPairs", [].into_iter()).await
-            }
-
-            async fn camera_sensor_names(&mut self) -> Result<HashMap<CameraBoardSocket, String>, String> {
-                let names = self.call_untyped("getCameraSensorNames", [].into_iter()).await.map_err(|e| serde_rmpv::from_value::<String>(&e).unwrap())?;
-
-                let rmpv::Value::Array(names) = names else {
-                    panic!()
-                };
-
-                let mut map = HashMap::new();
-
-                for pair in names {
-                    let rmpv::Value::Array(vals) = pair else {
-                        panic!();
-                    };
-
-                    let [sock, name]: [rmpv::Value; 2] = vals.try_into().unwrap() else {
-                        panic!();
-                    };
-                    let sock = serde_rmpv::from_value(&sock).unwrap();
-                    let name = serde_rmpv::from_value(&name).unwrap();
-                    map.insert(sock, name);
-                }
-                Ok(map)
-            }
-            /*
-            async fn camera_sensor_names(&mut self) -> Result<HashMap<CameraBoardSocket, String>, String> {
-                self.call("getCameraSensorNames", [].into_iter()).await
-            }
-            */
-
-            async fn connected_imu(&mut self) -> Result<String, String> {
-                self.call("getConnectedIMU", [].into_iter()).await
-            }
-
-            async fn crash_device(&mut self) -> Result<rmpv::Value, rmpv::Value> {
-                self.call_untyped("crashDevice", [].into_iter()).await
-            }
-
-            async fn external_strobe_enable(&mut self, enable: bool) -> Result<rmpv::Value, rmpv::Value> {
-                self.call_untyped("setExternalStrobeEnable", [enable.into()].into_iter()).await
-            }
-
-            async fn imu_firmware_version(&mut self) -> Result<String, String> {
-                self.call("getIMUFirmwareVersion", [].into_iter()).await
-            }
-
-            async fn embedded_imu_firmware_version(&mut self) -> Result<String, String> {
-                self.call("getEmbeddedIMUFirmwareVersion", [].into_iter()).await
-            }
-
-            async fn ddr_memory_usage(&mut self) -> Result<MemoryInfo, String> {
-                self.call("getDdrUsage", [].into_iter()).await
-            }
-            
-            async fn cmx_memory_usage(&mut self) -> Result<MemoryInfo, String> {
-                self.call("getCmxUsage", [].into_iter()).await
-            }
-
-            async fn leon_css_heap_usage(&mut self) -> Result<MemoryInfo, String> {
-                self.call("getLeonCssHeapUsage", [].into_iter()).await
-            }
-
-            async fn leon_mss_heap_usage(&mut self) -> Result<MemoryInfo, String> {
-                self.call("getLeonMssHeapUsage", [].into_iter()).await
-            }
-
-            async fn chip_temperature(&mut self) -> Result<ChipTemperature, String> {
-                self.call("getChipTemperature", [].into_iter()).await
-            }
-
-            async fn leon_css_cpu_usage(&mut self) -> Result<CpuUsage, String> {
-                self.call("getLeonCssCpuUsage", [].into_iter()).await
-            }
-
-            async fn leon_mss_cpu_usage(&mut self) -> Result<CpuUsage, String> {
-                self.call("getLeonMssCpuUsage", [].into_iter()).await
-            }
-
-            async fn process_memory_usage(&mut self) -> Result<i64, String> {
-                self.call("getProcessMemoryUsage", [].into_iter()).await
-            }
-
-            async fn usb_speed(&mut self) -> Result<UsbSpeed, String> {
-                self.call("getUsbSpeed", [].into_iter()).await
-            }
-
-            async fn is_neural_depth_supported(&mut self) -> Result<bool, String> {
-                self.call("isNeuralDepthSupported", [].into_iter()).await
-            }
-
-            async fn is_pipeline_running(&mut self) -> Result<bool, String> {
-                self.call("isPipelineRunning", [].into_iter()).await
-            }
-
-            async fn set_log_level(&mut self, log_level: LogLevel) -> Result<rmpv::Value, rmpv::Value> {
-                self.call_untyped("setLogLevel", [(log_level as u8).into()].into_iter()).await
-            }
-
-            async fn set_node_log_level(&mut self, node_id: i64, log_level: LogLevel) -> Result<rmpv::Value, rmpv::Value> {
-                self.call_untyped("setNodeLogLevel", [node_id.into(), (log_level as u8).into()].into_iter()).await
-            }
-
-            async fn log_level(&mut self) -> Result<u32, String> {
-                self.call("getLogLevel", [].into_iter()).await
-            }
-
-            async fn node_log_level(&mut self, node_id: u64) -> Result<u32, String> {
-                self.call("getNodeLogLevel", [node_id.into()].into_iter()).await
-            }
-
-            async fn xlink_chunk_size(&mut self) -> Result<i32, String> {
-                self.call("getXLinkChunkSize", [].into_iter()).await
-            }
-
-            async fn set_ir_laser_dot_projector_intensity(&mut self, intensity: f32, mask: i32) -> Result<i32, String> {
-                self.call("setIrLaserDotProjectorBrightness", [intensity.into(), mask.into(), true.into()].into_iter()).await
-            }
-
-            async fn set_ir_floodlight_intensity(&mut self, intensity: f32, mask: i32) -> Result<i32, String> {
-                self.call("setIrFloodLightBrightness", [intensity.into(), mask.into(), true.into()].into_iter()).await
-            }
-
-            async fn ir_drivers(&mut self) -> Result<Option<(String, i32, i32)>, String> {
-                let items = self.call_untyped("getIrDrivers", [].into_iter()).await.map_err(|e| serde_rmpv::from_value::<String>(&e).unwrap())?;
-                let rmpv::Value::Array(items) = items else {
-                    panic!();
-                };
-
-                if items.is_empty() {
-                    return Ok(None)
-                }
-
-                let [name, v1, v2]: [rmpv::Value; 3] = items.try_into().unwrap();
-
-                Ok(Some((serde_rmpv::from_value(&name).unwrap(), serde_rmpv::from_value(&v1).unwrap(), serde_rmpv::from_value(&v2).unwrap())))
-            }
-
-            /*
-            async fn crash_dump(&mut self, clear: bool) -> Result<rmpv::Value, rmpv::Value> {
-                self.call_untyped("getCrashDump", [clear.into()].into_iter()).await
-            }
-            */
-            async fn crash_dump(&mut self, clear: bool) -> Result<CrashDump, String> {
-                self.call("getCrashDump", [clear.into()].into_iter()).await
-            }
-
-            async fn has_crash_dump(&mut self) -> Result<bool, String> {
-                self.call("hasCrashDump", [].into_iter()).await
-            }
-
-            const DEFAULT_TIMESYNC_PERIOD: std::time::Duration = std::time::Duration::from_millis(1000);
-            const DEFAULT_TIMESYNC_SAMPLE_COUNT: u32 = 1000;
-            const DEFAULT_TIMESYNC_RANDOM: bool = false;
-            async fn set_timesync(&mut self, period: Option<std::time::Duration>, sample_count: Option<u32>, random: Option<bool>, enable: bool) -> Result<rmpv::Value, rmpv::Value> {
-                let (period, sample_count, random) = if !enable {
-                    (std::time::Duration::from_millis(1000), 0, false)
-                } else {
-                    (period.unwrap_or(Self::DEFAULT_TIMESYNC_PERIOD), sample_count.unwrap_or(Self::DEFAULT_TIMESYNC_SAMPLE_COUNT), random.unwrap_or(Self::DEFAULT_TIMESYNC_RANDOM))
-                };
-
-                let millis = period.as_millis();
-
-                if millis < 10 || millis > (u32::MAX as u128) {
-                    panic!()
-                }
-
-                let millis = millis as u32;
-
-                self.call_untyped("setTimesync", [millis.into(), sample_count.into(), random.into()].into_iter()).await
-            }
-
-            async fn set_system_information_logging_rate(&mut self, hz: f32) -> Result<rmpv::Value, rmpv::Value> {
-                self.call_untyped("setSystemInformationLoggingRate", [hz.into()].into_iter()).await
-            }
-
-            async fn system_information_logging_rate(&mut self) -> Result<f32, String> {
-                self.call("getSystemInformationLoggingRate", [].into_iter()).await
-            }
-            async fn is_eeprom_available(&mut self) -> Result<bool, String> {
-                self.call("isEepromAvailable", [].into_iter()).await
-            }
-
-            async fn calibration(&mut self) -> Result<EepromData, String> {
-                let res = self.call_untyped("getCalibration", [].into_iter()).await.map_err(|e| serde_rmpv::from_value::<String>(&e).unwrap())?;
-                Ok(Self::parse_calibration(res))
-            }
-
-            async fn calibration2(&mut self) -> Result<EepromData, String> {
-                let res = self.call_untyped("readFromEeprom", [].into_iter()).await.map_err(|e| serde_rmpv::from_value::<String>(&e).unwrap())?;
-                Ok(Self::parse_calibration(res))
-            }
-
-            fn parse_calibration(val: rmpv::Value) -> EepromData {
-                let rmpv::Value::Array(mut items) = val else {
-                    panic!();
-                };
-
-                let [_, _, data]: [rmpv::Value; 3] = items.try_into().unwrap();
-                serde_rmpv::from_value(&data).unwrap()
-            }
-
-            async fn set_pipeline_schema(&mut self, schema: PipelineSchema) -> Result<rmpv::Value, rmpv::Value> {
-                let val = serde_rmpv::to_value(&schema).unwrap();
-                self.call_untyped("setPipelineSchema", [val].into_iter()).await
-            }
-
-            async fn wait_for_device_ready(&mut self) -> Result<rmpv::Value, rmpv::Value> {
-                self.call_untyped("waitForDeviceReady", [].into_iter()).await
-            }
-
-            async fn build_pipeline(&mut self) -> Result<rmpv::Value, rmpv::Value> {
-                self.call_untyped("buildPipeline", [].into_iter()).await
-            }
-
-            async fn start_pipeline(&mut self) -> Result<rmpv::Value, rmpv::Value> {
-                self.call_untyped("startPipeline", [].into_iter()).await
-            }
-
-            //TODO: pipeline stuff (just more rpc calls)
-        }
-
-        #[derive(serde_repr::Deserialize_repr, serde_repr::Serialize_repr, Debug, Hash, PartialEq, Eq)]
-        #[repr(i32)]
-        enum CameraBoardSocket {
-            Auto = -1,
-            A = 0,
-            B = 1,
-            C = 2,
-            D = 3, // also known as vertical
-            E = 4,
-            F = 5,
-            G = 6,
-            H = 7,
-            I = 8,
-            J = 9,
-        }
-
-        #[derive(serde_repr::Deserialize_repr, Debug)]
-        #[repr(i32)]
-        enum ConnectionInterface {
-            Usb = 0,
-            Ethernet = 1,
-            Wifi = 2,
-        }
-
-        #[derive(serde::Deserialize, Debug)]
-        struct CameraFeatures {
-            socket: CameraBoardSocket,
-            #[serde(rename = "sensorName")]
-            sensor_name: String,
-            width: i32,
-            height: i32,
-            orientation: CameraImageOrientation,
-            #[serde(rename = "supportedTypes")]
-            supported_types: Vec<CameraSensorType>,
-            #[serde(rename = "hasAutofocusIC")]
-            has_autofocus_ic: bool,
-            #[serde(rename = "hasAutofocus")]
-            has_autofocus: bool,
-            name: String,
-            #[serde(rename = "additionalNames")]
-            additional_names: Vec<String>,
-            configs: Vec<CameraSensorConfig>,
-            #[serde(rename = "calibrationResolution")]
-            calibration_resolution: Option<CameraSensorConfig>,
-        }
-
-        #[derive(serde_repr::Deserialize_repr, Debug)]
-        #[repr(i32)]
-        enum CameraSensorType {
-            Auto = -1,
-            Color = 0,
-            Mono = 1,
-            Tof = 2,
-            Thermal = 3,
-        }
-
-        #[derive(serde::Deserialize, Debug)]
-        struct CameraSensorConfig {
-            width: i32,
-            height: i32,
-            #[serde(rename = "minFps")]
-            min_fps: f32,
-            #[serde(rename = "maxFps")]
-            max_fps: f32,
-            fov: Rect,
-            #[serde(rename = "type")]
-            ty: CameraSensorType,
-        }
-
-        #[derive(serde::Deserialize, Debug)]
-        struct Rect {
-            x: f32,
-            y: f32,
-            width: f32,
-            height: f32,
-            normalized: bool,
-            #[serde(rename = "hasNormalized")]
-            has_normalized: bool,
-        }
-
-        #[derive(serde_repr::Deserialize_repr, Debug)]
-        #[repr(i32)]
-        enum CameraImageOrientation {
-            Auto = -1,
-            Normal = 0,
-            HorizontalMirror = 1,
-            VerticalFlip = 2,
-            Rotate180 = 3,
-        }
-
-        #[derive(serde::Deserialize, Debug)]
-        struct StereoPair {
-            left: CameraBoardSocket,
-            right: CameraBoardSocket,
-            baseline: f32,
-            #[serde(rename = "isVertical")]
-            is_vertical: bool,
-        }
-
-        #[derive(serde::Deserialize, Debug)]
-        struct MemoryInfo {
-            remaining: i64,
-            used: i64,
-            total: i64,
-        }
-
-        #[derive(serde::Deserialize, Debug)]
-        struct ChipTemperature {
-            css: f32,
-            mss: f32,
-            upa: f32,
-            dss: f32,
-            average: f32,
-        }
-
-        #[derive(serde::Deserialize, Debug)]
-        struct CpuUsage {
-            average: f32,
-            #[serde(rename = "msTime")]
-            ms_time: i32,
-        }
-
-        #[derive(serde_repr::Deserialize_repr, Debug)]
-        #[repr(u32)]
-        enum UsbSpeed {
-            Unknown = 0,
-            Low = 1,
-            Full = 2,
-            High = 3,
-            Super = 4,
-            SuperPlus = 5,
-        }
-
-        #[derive(serde_repr::Deserialize_repr, serde_repr::Serialize_repr, Debug)]
-        #[repr(u8)]
-        enum LogLevel {
-            Trace = 0,
-            Debug = 1,
-            Info = 2,
-            Warn = 3,
-            Error = 4,
-            Critical = 5,
-            Off = 6,
-        }
-
-        #[derive(serde::Deserialize, serde::Serialize, Debug)]
-        struct EepromData {
-            version: u32,
-            #[serde(rename = "productName")]
-            product_name: String,
-            #[serde(rename = "boardCustom")]
-            board_custom: String,
-            #[serde(rename = "boardName")]
-            board_name: String,
-            #[serde(rename = "boardRev")]
-            board_rev: String,
-            #[serde(rename = "boardConf")]
-            board_conf: String,
-            #[serde(rename = "hardwareConf")]
-            hardware_conf: String,
-            #[serde(rename = "deviceName")]
-            device_name: String,
-            #[serde(rename = "batchName")]
-            batch_name: Option<String>,
-            #[serde(rename = "batchTime")]
-            batch_time: u64,
-            #[serde(rename = "boardOptions")]
-            board_options: u32,
-            #[serde(rename = "cameraData")]
-            camera_data: Vec<(CameraBoardSocket, CameraInfo)>,
-            #[serde(rename = "stereoRectificationData")]
-            stereo_rectification: StereoRectification,
-            #[serde(rename = "imuExtrinsics")]
-            imu_extrinsics: Extrinsics,
-            #[serde(rename = "housingExtrinsics")]
-            housing_extrinsisc: Extrinsics,
-            #[serde(rename = "miscellaneousData")]
-            misc_data: Vec<u8>,
-            #[serde(rename = "stereoUseSpecTranslation")]
-            stereo_use_spec_translation: bool,
-            #[serde(rename = "stereoEnableDistortionCorrection")]
-            stereo_enable_distortion_correction: bool,
-            #[serde(rename = "verticalCameraSocket")]
-            vertical_camera_socket: CameraBoardSocket,
-        }
-
-        #[derive(serde::Deserialize, serde::Serialize, Debug)]
-        struct StereoRectification {
-            #[serde(rename = "rectifiedRotationLeft")]
-            rectified_rotation_left: Vec<Vec<f32>>,
-            #[serde(rename = "rectifiedRotationRight")]
-            rectified_rotation_right: Vec<Vec<f32>>,
-            #[serde(rename = "leftCameraSocket")]
-            left_camera_socket: CameraBoardSocket,
-            #[serde(rename = "rightCameraSocket")]
-            right_camera_socket: CameraBoardSocket,
-        }
-
-        #[derive(serde::Deserialize, serde::Serialize, Debug)]
-        struct CameraInfo {
-            width: u16,
-            height: u16,
-            #[serde(rename = "lensPosition")]
-            lens_position: u8,
-            #[serde(rename = "intrinsicMatrix")]
-            intrinsic_matrix: Vec<Vec<f32>>,
-            #[serde(rename = "distortionCoeff")]
-            distortion_coef: Vec<f32>,
-            extrinsics: Extrinsics,
-            #[serde(rename = "specHfovDeg")]
-            fov_deg: f32,
-            #[serde(rename = "cameraType")]
-            ty: CameraModel,
-        }
-
-        #[derive(serde_repr::Deserialize_repr, serde_repr::Serialize_repr, Debug)]
-        #[repr(i8)]
-        enum CameraModel {
-            Perspective = 0,
-            Fisheye = 1,
-            Equirectangular = 2,
-            RadialDivision = 3,
-        }
-
-        #[derive(serde::Deserialize, serde::Serialize, Debug)]
-        struct Extrinsics {
-            #[serde(rename = "rotationMatrix")]
-            rotation_mtx: Vec<Vec<f32>>,
-            translation: Point3f,
-            #[serde(rename = "specTranslation")]
-            spec_translation: Point3f,
-            #[serde(rename = "toCameraSocket")]
-            to_camera_socket: CameraBoardSocket,
-        }
-
-        #[derive(serde::Deserialize, serde::Serialize, Debug)]
-        struct Point3f {
-            x: f32,
-            y: f32,
-            z: f32,
-        }
-
-        #[derive(serde::Deserialize, Debug)]
-        struct CrashDump {
-            #[serde(rename = "crashReports")]
-            crash_reports: Vec<CrashReport>,
-            #[serde(rename = "depthaiCommitHash")]
-            dai_commit_hash: String,
-            #[serde(rename = "deviceId")]
-            device_id: String,
-        }
-
-        #[derive(serde::Deserialize, Debug)]
-        struct CrashReport {
-            processor: ProcessorType,
-            #[serde(rename = "errorSource")]
-            error_source: String,
-            #[serde(rename = "crashedThreadId")]
-            crashed_thread_id: u32,
-            #[serde(rename = "errorSourceInfo")]
-            error_source_info: ErrorSourceInfo,
-            #[serde(rename = "threadCallstack")]
-            thread_callstack: Vec<ThreadCallstack>,
-            prints: Vec<String>,
-            #[serde(rename = "uptimeNs")]
-            uptime_ns: u64,
-            #[serde(rename = "timerRaw")]
-            timer_raw: u64,
-            #[serde(rename = "statusFlags")]
-            status_flags: u64,
-        }
-
-        #[derive(serde::Deserialize, Debug)]
-        struct ErrorSourceInfo {
-            #[serde(rename = "assertContext")]
-            assert_context: AssertContext,
-            #[serde(rename = "trapContext")]
-            trap_context: TrapContext,
-            #[serde(rename = "errorId")]
-            error_id: u32,
-        }
-
-        #[derive(serde::Deserialize, Debug)]
-        struct AssertContext {
-            #[serde(rename = "fileName")]
-            file_name: String,
-            #[serde(rename = "functionName")]
-            function_name: String,
-            line: u32,
-        }
-
-        #[derive(serde::Deserialize, Debug)]
-        struct TrapContext {
-            #[serde(rename = "trapNumber")]
-            trap_number: u32,
-            #[serde(rename = "trapAddress")]
-            trap_address: u32,
-            #[serde(rename = "trapName")]
-            trap_name: String,
-        }
-
-        #[derive(serde::Deserialize, Debug)]
-        struct ThreadCallstack {
-            #[serde(rename = "threadId")]
-            thread_id: u32,
-            #[serde(rename = "threadName")]
-            thread_name: String,
-            #[serde(rename = "threadStatus")]
-            thread_status: String,
-            #[serde(rename = "stackBottom")]
-            stack_bottom: u32,
-            #[serde(rename = "stackTop")]
-            stack_top: u32,
-            #[serde(rename = "stackPointer")]
-            stack_pointer: u32,
-            #[serde(rename = "instructionPointer")]
-            instruction_pointer: u32,
-            #[serde(rename = "callStack")]
-            callstack: Vec<CallstackContext>,
-        }
-
-        #[derive(serde::Deserialize, Debug)]
-        struct CallstackContext {
-            #[serde(rename = "callSite")]
-            callsite: u32,
-            #[serde(rename = "calledTarget")]
-            called_target: u32,
-            #[serde(rename = "framePointer")]
-            frame_pointer: u32,
-            context: String,
-        }
-
-        #[derive(serde_repr::Deserialize_repr, Debug)]
-        #[repr(i32)]
-        enum ProcessorType {
-            LeonCss = 0,
-            LeonMss = 1,
-            Cpu = 2,
-            Dsp = 3,
-        }
-
-        // below is for starting pipeline stuff
-
-        #[derive(serde::Deserialize, serde::Serialize, Debug)]
-        struct PipelineSchema {
-            connections: Vec<NodeConnectionSchema>,
-            #[serde(rename = "globalProperties")]
-            global_properties: GlobalProperties,
-            nodes: Vec<(i64, NodeObjInfo)>,
-            bridges: Vec<(i64, i64)>,
-        }
-
-        #[derive(serde::Deserialize, serde::Serialize, Debug, PartialEq, Eq)]
-        struct NodeConnectionSchema {
-            #[serde(rename = "node1Id")]
-            output_id: i64,
-            #[serde(rename = "node1OutputGroup")]
-            output_group: String,
-            #[serde(rename = "node1Output")]
-            output: String,
-            #[serde(rename = "node2Id")]
-            input_id: i64,
-            #[serde(rename = "node2InputGroup")]
-            input_group: String,
-            #[serde(rename = "node2Input")]
-            input: String,
-        }
-
-        #[derive(serde::Deserialize, serde::Serialize, Debug)]
-        struct GlobalProperties {
-            #[serde(rename = "leonCssFrequencyHz")]
-            leon_css_frequency_hz: f32,
-            #[serde(rename = "leonMssFrequencyHz")]
-            leon_mss_frequency_hz: f32,
-            #[serde(rename = "pipelineName")]
-            pipeline_name: Option<String>,
-            #[serde(rename = "pipelineVersion")]
-            pipeline_version: Option<String>,
-            #[serde(rename = "calibData")]
-            calibration: Option<EepromData>,
-            #[serde(rename = "eepromId")]
-            eeprom_id: Option<u32>,
-            #[serde(rename = "cameraTuningBlobSize")]
-            camera_tuning_blob_size: Option<u32>,
-            #[serde(rename = "cameraTuningBlobUri")]
-            camera_tuning_blob_uri: String,
-            #[serde(rename = "cameraSocketTuningBlobSize")]
-            camera_socket_tuning_blob_size: Vec<(CameraBoardSocket, u32)>,
-            #[serde(rename = "cameraSocketTuningBlobUri")]
-            camera_socket_tuning_blob_uri: Vec<(CameraBoardSocket, String)>,
-            #[serde(rename = "xlinkChunkSize")]
-            xlink_chunk_size: i32,
-            #[serde(rename = "sippBufferSize")]
-            sipp_buffer_size: u32,
-            #[serde(rename = "sippDmaBufferSize")]
-            sipp_dma_buffer_size: u32,
-        }
-
-        impl GlobalProperties {
-            const SIPP_BUFFER_DEFAULT_SIZE: u32 = 18 * 1024;
-            const SIPP_DMA_BUFFER_DEFAULT_SIZE: u32 = 16 * 1024;
-        }
-
-        #[derive(serde::Deserialize, serde::Serialize, Debug)]
-        struct NodeObjInfo {
-            id: i64,
-            #[serde(rename = "parentId")]
-            parent_id: i64,
-            name: String,
-            alias: String,
-            #[serde(rename = "deviceId")]
-            device_id: String,
-            #[serde(rename = "deviceNode")]
-            device_node: bool,
-            properties: Vec<u8>,
-            #[serde(rename = "logLevel")]
-            log_level: LogLevel,
-            #[serde(rename = "ioInfo")]
-            io_info: Vec<((String, String), NodeIoInfo)>,
-        }
-
-        #[derive(serde::Deserialize, serde::Serialize, Debug)]
-        struct NodeIoInfo {
-            group: String,
-            name: String,
-            #[serde(rename = "type")]
-            ty: NodeType,
-            blocking: bool,
-            #[serde(rename = "queueSize")]
-            queue_size: i32,
-            #[serde(rename = "waitForMessage")]
-            wait_for_message: bool,
-            id: u32,
-        }
-
-        #[derive(serde_repr::Deserialize_repr, serde_repr::Serialize_repr, Debug)]
-        #[repr(u8)]
-        enum NodeType {
-            MSender = 0,
-            SSender = 1,
-            MReceiver = 2,
-            SReceiver = 3,
-        }
-        // end of pipeline
-
-
-        // libnop encoded structs
-
-        #[derive(serde::Deserialize, Debug)]
-        struct SystemInfo {
-            ddr_memory_usage: MemoryInfo,
-            cmx_memory_usage: MemoryInfo,
-            leon_css_memory_usage: MemoryInfo,
-            leon_mss_memory_usage: MemoryInfo,
-            leon_css_cpu_usage: CpuUsage,
-            leon_mss_cpu_usage: CpuUsage,
-            chip_temperature: ChipTemperature,
-        }
-
-        //end of libnop type defines
-        
-        let mut rpc = Rpc::new(&mut rpc_stream);
+        let mut rpc = rpc::Rpc::new(&mut rpc_stream);
 
         let is_running = rpc.is_running().await;
         //let resp = rpc.call("isRunning", [].into_iter()).await;
@@ -1082,6 +302,12 @@ async fn main() {
         println!("calibration2: {calibration2:?}");
         */
 
+        // TODO: need to figure out this thing is made.
+        //
+
+        use crate::rpc::{PipelineSchema, NodeConnectionSchema, NodeObjInfo, NodeIoInfo, GlobalProperties, NodeType, LogLevel};
+
+        /*
         let schema = PipelineSchema {
             bridges: vec![],
             connections: vec![
@@ -1116,6 +342,15 @@ async fn main() {
                     device_node: true,
                     id: 1,
                     io_info: vec![
+                        /*
+                         * NOTE: these are only used for debugging
+                         * TODO: maybe a create_node_with_debug() which extends the outputs and
+                         *
+                         * make it so that it keeps the same inputs 
+                         *
+                         * wraps a Debugging<Node> thing and mimicks all other properties to be
+                         * able to optionally add this
+                         *
                         (("".into(), "pipelineEventOutput".into()), NodeIoInfo {
                             blocking: false, 
                             group: "".into(),
@@ -1125,10 +360,11 @@ async fn main() {
                             ty: NodeType::MSender,
                             wait_for_message: false,
                         }), 
+                        */
                         (("".into(), "in".into()), NodeIoInfo {
                             blocking: true,
                             group: "".into(),
-                            id: 2,
+                            id: 1,
                             name: "in".into(),
                             queue_size: 3,
                             ty: NodeType::SReceiver,
@@ -1149,12 +385,13 @@ async fn main() {
                         (("".into(), "out".into()), NodeIoInfo {
                             blocking: false,
                             group: "".into(),
-                            id: 1,
+                            id: 0,
                             name: "out".into(),
                             queue_size: 8,
                             ty: NodeType::MSender,
                             wait_for_message: false,
                         }),
+                        /*
                         (("".into(), "pipelineEventOutput".into()), NodeIoInfo {
                             blocking: false,
                             group: "".into(),
@@ -1164,6 +401,7 @@ async fn main() {
                             ty: NodeType::MSender,
                             wait_for_message: false,
                         }),
+                        */
                     ],
                     log_level: LogLevel::Trace,
                     name: "SystemLogger".into(),
@@ -1171,6 +409,18 @@ async fn main() {
                     properties: vec![185, 1, 136, 0, 0, 128, 63],
                 })
             ]
+        };
+        */
+
+        const DEVICE_ID: &str = "19443010A1A1872D00";
+
+        let schema = {
+            let mut pipe = pipeline::Pipeline::new();
+            let logger = pipe.create_node::<pipeline::SystemLogger>();
+            let mut out = pipe.create_node::<pipeline::XLinkOut>();
+
+            pipe.create_output_queue(logger.output(), &mut out);
+            pipe.build(DEVICE_ID)
         };
 
         connection.create_stream("__x_0_out", bootloader::MAX_PACKET_SIZE).await.unwrap();
@@ -1198,7 +448,7 @@ async fn main() {
             let mut bytes = output.read().await;
 
             let val = rnop::Value::parse(&bytes).unwrap();
-            let val = rnop::from_value::<SystemInfo>(val).unwrap();
+            let val = rnop::from_value::<pipeline::SystemInfo>(val).unwrap();
             println!("\n{val:?}");
         }
     }
@@ -2148,12 +1398,6 @@ enum DeviceState {
     FlashBooted,
 }
 
-enum IpDeviceState {
-    Booted = 1,
-    Bootloader = 3,
-    FlashBooted = 4,
-}
-
 impl DeviceDiscoveryResponseExt {
     fn device_state(&self) -> DeviceState {
         match self.state {
@@ -2312,7 +1556,6 @@ pub mod bootloader {
 enum IoEvent {
     Pong,
     CreatedStream(StreamName, ConnectionStream),
-    DeviceRead(u32, Vec<u8>),
     Shutdown,
 }
 
@@ -2637,4 +1880,1639 @@ fn chunks() {
     assert_eq!(chunks.next(), Some(&[3, 4][..]));
     assert_eq!(chunks.next(), Some(&[5][..]));
     assert_eq!(chunks.next(), None);
+}
+
+mod pipeline {
+    use std::collections::HashMap;
+    use crate::rpc::{LogLevel, NodeType};
+
+
+    // this is used 'per node' related to the nodes operation
+    // => it will be there in prob every device io_info
+    /*
+    fn pipeline_event_output(id: u32) -> NodeIoInfo {
+        NodeIoInfo {
+            blocking: false,
+            group: "".into(),
+            id,
+            name: "pipelineEventOutput".into(),
+            queue_size: 8,
+            ty: NodeType::MSender,
+            wait_for_message: false,
+        }
+    }
+    */
+
+    fn register_node<'a, N: Node>(n: &'a NodeT<N>, map: &mut HashMap<u32, InternalNodeInfo<'a>>, io_idx: &mut u32) {
+        let mut w = vec![];
+
+        n.properties.serialize(&mut w).unwrap();
+
+        let mut io_info = IoInfo::new(io_idx);
+
+        n.input.register(&mut io_info);
+        n.output.register(&mut io_info);
+
+        let info = InternalNodeInfo {
+            name: N::NAME,
+            alias: N::ALIAS,
+            properties: w,
+            log_level: n.log_level,
+            io_info: io_info.inner,
+        };
+
+        map.insert(n.id, info);
+    }
+
+    #[derive(Debug)]
+    struct InternalNodeInfo<'a> {
+        name: &'a str,
+        alias: Option<&'a str>,
+        properties: Vec<u8>,
+        log_level: LogLevel,
+        io_info: HashMap<(Option<&'a str>, &'a str), InternalIoInfo<'a>>
+    }
+
+    trait Deserializer {
+        type Error;
+        fn deserialize<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T, Self::Error>;
+    }
+
+    trait Deserialize<D: Deserializer>: Sized + serde::de::DeserializeOwned {
+        fn deserialize(bytes: &[u8]) -> Result<Self, D::Error> {
+            D::deserialize(bytes)
+        }
+    }
+
+    trait NotAnySerializer {}
+
+    pub struct ProtobufDeserializer;
+    pub struct ProtobufSerializer;
+    pub struct RnopDeserializer;
+    pub struct RnopSerializer;
+    pub struct AnySerializer;
+    pub struct AnyDeserializer;
+
+    macro_rules! not_any_serializer {
+        ($($ser:ty),*) => {
+            $(
+                impl NotAnySerializer for $ser {}
+            )*
+        }
+    }
+
+    not_any_serializer!(ProtobufDeserializer, ProtobufSerializer, RnopDeserializer, RnopSerializer, MsgpackDeserializer, MsgpackSerializer);
+
+    impl Serializer for AnySerializer {
+        type Error = ();
+        fn serialize<T: serde::Serialize, W: std::io::Write>(t: &T, writer: &mut W) -> Result<usize, Self::Error> {
+            todo!()
+        }
+    }
+
+
+    impl Serializer for RnopSerializer {
+        type Error = ();
+        fn serialize<T: serde::Serialize, W: std::io::Write>(t: &T, writer: &mut W) -> Result<usize, Self::Error> {
+            let value = rnop::to_value(t).unwrap();
+            let size = value.write(writer).unwrap();
+            Ok(size)
+        }
+    }
+
+    impl Deserializer for RnopDeserializer {
+        type Error = ();
+        fn deserialize<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T, Self::Error> {
+            let value = rnop::Value::parse(bytes).unwrap();
+            // FIXME: for some reason deserializing single field structs does not work, issue with the lib
+            Ok(rnop::from_value::<T>(value).unwrap())
+        }
+    }
+
+    struct MsgpackDeserializer;
+    struct MsgpackSerializer;
+
+    impl Serializer for MsgpackSerializer {
+        type Error = ();
+        fn serialize<T: serde::Serialize, W: std::io::Write>(t: &T, writer: &mut W) -> Result<usize, Self::Error> {
+            todo!()
+        }
+    }
+
+    trait Serializer {
+        type Error;
+        fn serialize<T: serde::Serialize, W: std::io::Write>(t: &T, writer: &mut W) -> Result<usize, Self::Error>;
+    }
+
+    trait Serialize<S: Serializer>: Sized + serde::Serialize {
+        fn serialize<W: std::io::Write>(&self, writer: &mut W) -> Result<usize, S::Error> {
+            S::serialize(self, writer)
+        }
+    }
+
+    impl <T: serde::Serialize, S: Serializer> Serialize<S> for T {}
+    impl <T: serde::de::DeserializeOwned, D: Deserializer> Deserialize<D> for T {}
+
+    pub trait Node {
+        type Input: IoRegister + Inputs + Default;
+        type Output: IoRegister + Outputs + Default;
+
+        type Properties: Default + Serialize<RnopSerializer>;
+        const NAME: &str;
+        const ALIAS: Option<&str> = None;
+    }
+
+    //TODO: having a generic way to have &mut refs to nodes with and without debug
+
+    struct Debug<T> {
+        inner: T,
+    }
+
+    #[derive(Default)]
+    struct PipelineEventOutput {
+        inner: Output<PipelineEvent, RnopDeserializer>,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct PipelineEvent {
+
+    }
+
+    impl StaticIoDesc for PipelineEvent {
+        //TODO
+        const NAME: &str = "";
+        const NODE_TYPE: NodeType = NodeType::MSender;
+    }
+
+    impl StaticIoDesc for PipelineEventOutput {
+        const NAME: &str = PipelineEvent::NAME;
+        const NODE_TYPE: NodeType = PipelineEvent::NODE_TYPE;
+        const GROUP: Option<&str> = PipelineEvent::GROUP;
+    }
+
+    impl IoRegister for PipelineEventOutput {
+        fn register<'a, 'b>(&'a self, info: &mut IoInfo<'a, 'b>) {
+            todo!()
+        }
+    }
+
+    impl <O: Outputs> Outputs for (PipelineEventOutput, O) {
+        type Outputs<'a, N> = O::Outputs<'a, N> where Self: 'a, N: Node + 'a;
+        fn outputs<'a, T: Node>(&'a self, node: &'a NodeT<T>) -> Self::Outputs<'a, T> {
+            self.1.outputs(node)
+        }
+    }
+
+    impl <I1: Inputs, I2: Inputs> Inputs for (I1, I2) {
+        type Inputs<'a, N> = (I1::Inputs<'a, N>, I2::Inputs<'a, N>) where Self: 'a, N: Node + 'a;
+        fn inputs<'a, T: Node>(&'a self, node: &'a NodeT<T>) -> Self::Inputs<'a, T> {
+            (self.0.inputs(node), self.1.inputs(node))
+        }
+
+    }
+
+    impl <O1: Outputs, O2: Outputs> Outputs for (O1, O2) {
+        type Outputs<'a, N> = (O1::Outputs<'a, N>, O2::Outputs<'a, N>) where Self: 'a, N: Node + 'a;
+        fn outputs<'a, T: Node>(&'a self, node: &'a NodeT<T>) -> Self::Outputs<'a, T> {
+            (self.0.outputs(node), self.1.outputs(node))
+        }
+    }
+
+    impl <R1: IoRegister, R2: IoRegister> IoRegister for (R1, R2) {
+        fn register<'a, 'b>(&'a self, info: &mut IoInfo<'a, 'b>) {
+            self.0.register(info);
+            self.1.register(info);
+        }
+    }
+
+    impl <T: Node> Node for Debug<T> {
+        type Input = T::Input;
+        type Output = (PipelineEventOutput, T::Output);
+        type Properties = T::Properties;
+        const NAME: &str = T::NAME;
+        const ALIAS: Option<&str> = T::ALIAS;
+    }
+
+    impl <T: Node> NodeT<Debug<T>> {
+        fn debug_out(&self) -> OutputRef<'_, T, PipelineEvent, RnopDeserializer> {
+            todo!()
+        }
+    }
+
+    // for registering to the pipeline
+    struct IoInfo<'a, 'b> {
+        current_id: &'b mut u32,
+        inner: HashMap<(Option<&'a str>, &'a str), InternalIoInfo<'a>>
+    }
+
+    #[derive(Debug)]
+    struct InternalIoInfo<'a> {
+        ty: NodeType,
+        conf: &'a IoDescConf,
+        id: u32,
+    }
+
+    impl <'a, 'b> IoInfo<'a, 'b> {
+        fn new(id: &'b mut u32) -> Self {
+            Self {
+                current_id: id,
+                inner: Default::default(),
+            }
+        }
+
+        pub fn push(&mut self, group: Option<&'a str>, name: &'a str, ty: NodeType, conf: &'a IoDescConf) {
+            let info = InternalIoInfo {
+                ty,
+                id: *self.current_id,
+                conf,
+            };
+
+            *self.current_id += 1;
+
+            self.inner.insert((group, name), info);
+        }
+    }
+
+    trait IoRegister {
+        fn register<'a, 'b>(&'a self, info: &mut IoInfo<'a, 'b>);
+    }
+
+    pub trait Inputs {
+        type Inputs<'a, N> where Self: 'a, N: Node + 'a;
+        fn inputs<'a, T: Node>(&'a self, node: &'a NodeT<T>) -> Self::Inputs<'a, T>;
+    }
+
+    pub trait Outputs {
+        type Outputs<'a, N> where Self: 'a, N: Node + 'a;
+        fn outputs<'a, T: Node>(&'a self, node: &'a NodeT<T>) -> Self::Outputs<'a, T>;
+    }
+
+    trait IoDesc {
+        fn name(this: &Self::InfoStorage) -> &str;
+
+        fn group(this: &Self::InfoStorage) -> Option<&str> {
+            None
+        }
+
+        fn node_type(this: &Self::InfoStorage) -> NodeType;
+
+        type InfoStorage: Default;
+    }
+
+    trait StaticIoDesc {
+        const NAME: &str;
+        const GROUP: Option<&str> = None;
+        const NODE_TYPE: NodeType;
+    }
+
+    impl <T: StaticIoDesc> IoDesc for T {
+        fn name(_: &Self::InfoStorage) -> &str {
+            T::NAME
+        }
+
+        fn group(_: &Self::InfoStorage) -> Option<&str> {
+            T::GROUP
+        }
+
+        fn node_type(_: &Self::InfoStorage) -> NodeType {
+            T::NODE_TYPE
+        }
+
+        type InfoStorage = ();
+    }
+
+    pub struct XLI;
+    #[derive(Default)]
+    pub struct Empty;
+
+    impl IoRegister for Empty {
+        fn register(&self, info: &mut IoInfo<'_, '_>) {
+        }
+    }
+
+    impl Inputs for Empty {
+        type Inputs<'a, N: Node + 'a> = ();
+        fn inputs<'a, T: Node>(&'a self, node: &'a NodeT<T>) -> Self::Inputs<'a, T> {}
+    }
+    impl Outputs for Empty {
+        type Outputs<'a, N: Node + 'a> = ();
+        fn outputs<'a, T: Node>(&'a self, node: &'a NodeT<T>) -> Self::Outputs<'a, T> {}
+    }
+
+    impl <T: IoDesc, S: Serializer> Inputs for Input<T, S> where T: Serialize<S> {
+        type Inputs<'a, N: Node + 'a> = InputRef<'a, N, T, S> where Self: 'a;
+        fn inputs<'a, N: Node>(&'a self, node: &'a NodeT<N>) -> Self::Inputs<'a, N> {
+            InputRef {
+                node,
+                input: self,
+            }
+        }
+    }
+
+    impl StaticIoDesc for XLI {
+        const NAME: &str = "in";
+        const NODE_TYPE: NodeType = NodeType::SReceiver;
+    }
+
+    #[derive(serde::Serialize, serde::Deserialize, Debug)]
+    pub struct XLinkOutProperties {
+        pub max_fps_limit: f32,
+        pub stream_name: String,
+        pub metadata_only: bool,
+        pub packet_size: i32,
+        pub bytes_per_second: i32,
+    }
+
+    impl core::default::Default for XLinkOutProperties {
+        fn default() -> Self {
+            Self {
+                max_fps_limit: -1.,
+                stream_name: Default::default(),
+                metadata_only: false,
+                packet_size: -1,
+                bytes_per_second: -1,
+            }
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    pub struct InputRef<'a, P: Node, T: IoDesc + Serialize<S>, S: Serializer> {
+        node: &'a NodeT<P>,
+        input: &'a Input<T, S>,
+    }
+
+    #[derive(Clone, Copy)]
+    pub struct OutputRef<'a, P: Node, T: IoDesc + Deserialize<D>, D: Deserializer> {
+        node: &'a NodeT<P>,
+        output: &'a Output<T, D>,
+    }
+
+    pub struct Input<T: IoDesc, S: Serializer> where T: Serialize<S> {
+        input: T::InfoStorage,
+        conf: IoDescConf,
+        _pd: core::marker::PhantomData<S>,
+    }
+
+    impl <T: IoDesc, S: Serializer> core::default::Default for Input<T, S> where T: Serialize<S> {
+        fn default() -> Self {
+            Self {
+                input: Default::default(),
+                conf: Default::default(),
+                _pd: core::marker::PhantomData,
+            }
+        }
+    }
+
+    impl Node for XLinkOut {
+        type Input = Input<Any<XLI>, AnySerializer>;
+        type Output = Empty;
+        type Properties = XLinkOutProperties;
+        const NAME: &str = "XLinkOut";
+    }
+
+    pub struct XLinkOut;
+    pub struct SystemLogger;
+
+    struct DynamicDesc {
+        name: String,
+        group: String,
+        node_type: NodeType,
+    }
+
+    pub struct Output<T: IoDesc, D: Deserializer> where T: Deserialize<D> {
+        output: T::InfoStorage,
+        conf: IoDescConf,
+        _pd: core::marker::PhantomData<D>,
+    }
+
+    // these need to move to sealed types if actually using them
+    impl <T: IoDesc, D: Deserializer> core::default::Default for Output<T, D> where T: Deserialize<D> {
+        fn default() -> Self {
+            Self {
+                output: Default::default(),
+                conf: Default::default(),
+                _pd: core::marker::PhantomData,
+            }
+        }
+    }
+
+    trait CompatibleLink {}
+    trait CompatibleSerialization {}
+
+    impl <T: StaticIoDesc> CompatibleLink for (T, T) {}
+
+    pub struct Any<I> {
+        inner: I,
+    }
+
+    impl <I> serde::Serialize for Any<I> {
+        fn serialize<S: serde::ser::Serializer>(&self, _: S) -> Result<S::Ok, S::Error> {
+            todo!()
+        }
+    }
+
+    impl <T: NotAnySerializer> CompatibleSerialization for (AnySerializer, T) {}
+    impl <T: NotAnySerializer> CompatibleSerialization for (T, AnyDeserializer) {}
+    impl CompatibleSerialization for (AnySerializer, AnyDeserializer) {}
+    impl CompatibleSerialization for (RnopSerializer, RnopDeserializer) {}
+    impl CompatibleSerialization for (MsgpackSerializer, MsgpackDeserializer) {}
+    impl CompatibleSerialization for (ProtobufSerializer, ProtobufDeserializer) {}
+
+
+    impl <T: StaticIoDesc, I> CompatibleLink for (Any<I>, T) {}
+    impl <T: StaticIoDesc, I> CompatibleLink for (T, Any<I>) {}
+
+    pub struct OutputQueue<T> {
+        name: crate::StreamName,
+        _pd: core::marker::PhantomData<T>,
+    }
+
+    impl <T: StaticIoDesc, D: Deserializer> StaticIoDesc for Output<T, D> where T: Deserialize<D> {
+        const NAME: &str = T::NAME;
+        const GROUP: Option<&str> = T::GROUP;
+        const NODE_TYPE: NodeType = T::NODE_TYPE;
+    }
+
+    impl <T: StaticIoDesc, S: Serializer> StaticIoDesc for Input<T, S> where T: Serialize<S> {
+        const NAME: &str = T::NAME;
+        const GROUP: Option<&str> = T::GROUP;
+        const NODE_TYPE: NodeType = T::NODE_TYPE;
+    }
+
+    impl <T: IoDesc> IoDesc for Any<T> {
+        fn name(this: &Self::InfoStorage) -> &str {
+            T::name(this)
+        }
+
+        fn group(this: &Self::InfoStorage) -> Option<&str> {
+            T::group(this)
+        }
+
+        fn node_type(this: &Self::InfoStorage) -> NodeType {
+            T::node_type(this)
+        }
+
+        type InfoStorage = T::InfoStorage;
+    }
+
+    impl StaticIoDesc for SystemInfo {
+        const NAME: &str = "out";
+        const NODE_TYPE: NodeType = NodeType::MSender;
+    }
+    
+    #[derive(serde::Serialize, serde::Deserialize, Debug)]
+    pub struct SystemLoggerProperties {
+        pub rate_hz: f32,
+    }
+
+    impl core::default::Default for SystemLoggerProperties {
+        fn default() -> Self {
+            Self {
+                rate_hz: 1.,
+            }
+        }
+    }
+
+    impl Node for SystemLogger {
+        type Input = Empty;
+        type Output = Output<SystemInfo, RnopDeserializer>;
+        type Properties = SystemLoggerProperties;
+        const NAME: &str = "SystemLogger";
+    }
+
+    impl <T: IoDesc, D: Deserializer> Outputs for Output<T, D> where T:Deserialize<D> {
+        type Outputs<'a, N: Node + 'a> = OutputRef<'a, N, T, D> where Self: 'a;
+        fn outputs<'a, N: Node>(&'a self, node: &'a NodeT<N>) -> Self::Outputs<'a, N> {
+            OutputRef {
+                node,
+                output: self,
+            }
+        }
+    }
+
+    use std::collections::HashSet;
+
+    #[derive(Debug)]
+    pub struct Pipeline<'a> {
+        current_node_id: u32,
+        connections: HashSet<NodeConnection<'a>>,
+        nodes: HashMap<u32, InternalNodeInfo<'a>>,
+        current_io_id: u32,
+        current_xlink_out_id: u32,
+        properties: crate::rpc::GlobalProperties,
+    }
+
+    #[derive(PartialEq, Eq, Hash, Debug)]
+    struct NodeConnection<'a> {
+        input_id: u32,
+        input_name: &'a str,
+        input_group: Option<&'a str>,
+        output_id: u32,
+        output_name: &'a str,
+        output_group: Option<&'a str>,
+    }
+
+    impl <'a> Pipeline<'a> {
+        pub fn new() -> Self {
+            Pipeline {
+                current_node_id: 0,
+                connections: HashSet::new(),
+                nodes: HashMap::new(),
+                current_io_id: 0,
+                current_xlink_out_id: 0,
+                properties: Default::default(),
+            }
+        }
+
+        pub fn create_node<T: Node>(&mut self) -> NodeT<T> {
+            self.create_node_with_properties(Default::default())
+        }
+
+        pub fn create_node_with_properties<T: Node>(&mut self, properties: T::Properties) -> NodeT<T> {
+            let id = self.current_node_id;
+            self.current_node_id += 1;
+            NodeT {
+                log_level: LogLevel::Off,
+                //parent_id: 1,
+                properties,
+                _m: core::marker::PhantomData,
+                input: Default::default(),
+                output: Default::default(),
+                id,
+            }
+        }
+
+        pub fn link<I: Serialize<S> + IoDesc, S: Serializer, O: Deserialize<D> + IoDesc, D: Deserializer, N1: Node, N2: Node>(&mut self, output: OutputRef<'a, N1, O, D>, input: InputRef<'a, N2, I, S>) where (I, O): CompatibleLink, (S, D): CompatibleSerialization {
+            let connection = NodeConnection {
+                input_id: input.node.id,
+                input_name: input.input.name(),
+                input_group: input.input.group(),
+                output_id: output.node.id,
+                output_name: output.output.name(),
+                output_group: output.output.group(),
+            };
+
+            self.connections.insert(connection);
+            self.insert_node(&input.node);
+            self.insert_node(&output.node);
+        }
+
+        fn insert_node<N: Node>(&mut self, node: &'a NodeT<N>) {
+            register_node(node, &mut self.nodes, &mut self.current_io_id)
+        }
+
+        pub fn create_output_queue<O: Deserialize<D> + IoDesc, D: Deserializer, N1: Node>(&mut self, output: OutputRef<'a, N1, O, D>, xlink: &'a mut NodeT<XLinkOut>)  -> OutputQueue<D> where (Any<XLI>, O): CompatibleLink, (AnySerializer, D): CompatibleSerialization 
+{
+            let id = self.current_xlink_out_id; 
+            self.current_xlink_out_id += 1;
+
+            let name = format!("__x_{}_out", id);
+
+            let stream_name = crate::StreamName::new(&name.as_bytes()).unwrap();
+
+            xlink.properties.stream_name = name;
+
+            self.link(output, xlink.input());
+
+            OutputQueue {
+                name: stream_name,
+                _pd: core::marker::PhantomData,
+            }
+        }
+
+        pub fn build(self, device_id: &str) -> crate::rpc::PipelineSchema {
+            let connections = self.connections.into_iter().map(|connection| {
+                crate::rpc::NodeConnectionSchema {
+                    output_id: connection.output_id as _,
+                    output_group: connection.output_group.unwrap_or_default().to_string(),
+                    output: connection.output_name.to_string(),
+
+                    input_id: connection.input_id as _,
+                    input_group: connection.input_group.unwrap_or_default().to_string(),
+                    input: connection.input_name.to_string(),
+                }
+            }).collect::<Vec<_>>();
+
+            let nodes = self.nodes.into_iter().map(|(id, node)| {
+
+                let io_info = node.io_info.into_iter().map(|((group, name), io)| {
+                    let group = group.unwrap_or_default();
+
+                    ((group.to_string(), name.to_string()), crate::rpc::NodeIoInfo {
+                        group: group.to_string(),
+                        name: name.to_string(),
+                        ty: io.ty,
+                        blocking: io.conf.blocking,
+                        queue_size: io.conf.queue_size.unwrap_or(8),
+                        wait_for_message: io.conf.wait_for_message,
+                        id: io.id,
+                    })
+                }).collect::<Vec<_>>();
+
+
+                (id as _, crate::rpc::NodeObjInfo {
+                    id: id as _,
+                    parent_id: -1,
+                    name: node.name.to_string(),
+                    alias: node.alias.unwrap_or_default().to_string(),
+                    device_id: device_id.to_string(),
+                    properties: node.properties,
+                    log_level: node.log_level,
+                    io_info,
+                    device_node: true,
+                })
+            }).collect::<Vec<_>>();
+
+            crate::rpc::PipelineSchema {
+                bridges: vec![],
+                global_properties: self.properties,
+                nodes,
+                connections,
+            }
+        }
+    }
+
+
+
+    // need knowledge of all of these types of connections
+    //
+    // also later add a marker for real serializers/deserializers then make sure that those are
+    // compatible as well as the types
+
+    // when the pipe is created it should take a &mut to the device connection so that it can
+    // create channels on the device once its created.
+
+    /*
+    pipe.link(logger.output(), out.input());
+    // typed
+    let queue1 = pipe.create_output_queue(logger.output(), out.input());
+    // untyped
+    let queue2 = out.create_output_queue();
+    */
+
+
+
+    //logger.output().link(out.input());
+
+    impl <T: Serialize<S>, S: Serializer> IoRegister for Input<T, S> where T: IoDesc {
+        fn register<'a, 'b>(&'a self, info: &mut IoInfo<'a, 'b>) {
+            info.push(T::group(&self.input), T::name(&self.input), T::node_type(&self.input), &self.conf)
+        }
+    }
+
+    impl <T: Deserialize<D>, D: Deserializer> IoRegister for Output<T, D> where T: IoDesc {
+        fn register<'a, 'b>(&'a self, info: &mut IoInfo<'a, 'b>) {
+
+            info.push(T::group(&self.output), T::name(&self.output), T::node_type(&self.output), &self.conf)
+        }
+    }
+
+    impl <T: Deserialize<D> + IoDesc, D: Deserializer> Output<T, D> {
+        pub fn name(&self) -> &str {
+            T::name(&self.output)
+        }
+
+        pub fn group(&self) -> Option<&str> {
+            T::group(&self.output)
+        }
+
+        pub fn node_type(&self) -> NodeType {
+            T::node_type(&self.output)
+        }
+    }
+
+    impl <T: Serialize<S> + IoDesc, S: Serializer> Input<T, S> {
+        pub fn name(&self) -> &str {
+            T::name(&self.input)
+        }
+
+        pub fn group(&self) -> Option<&str> {
+            T::group(&self.input)
+        }
+
+        pub fn node_type(&self) -> NodeType {
+            T::node_type(&self.input)
+        }
+    }
+
+    #[derive(Debug)]
+    struct IoDescConf {
+        blocking: bool,
+        queue_size: Option<i32>,
+        wait_for_message: bool,
+    }
+
+    impl core::default::Default for IoDescConf {
+        fn default() -> Self {
+            Self {
+                blocking: false,
+                queue_size: Some(8),
+                wait_for_message: false,
+            }
+        }
+    }
+
+    pub struct NodeT<P: Node> {
+        log_level: LogLevel,
+        // TODO: probably a better way to do parent id
+        //parent_id: i64,
+        properties: P::Properties,
+        _m: core::marker::PhantomData<P>,
+        input: P::Input,
+        output: P::Output,
+        id: u32,
+    }
+
+    impl <P: Node> NodeT<P> {
+        pub fn input(&self) -> <P::Input as Inputs>::Inputs<'_, P> {
+            self.input.inputs(self)
+        }
+
+        pub fn output(&self) -> <P::Output as Outputs>::Outputs<'_, P> {
+            self.output.outputs(self)
+        }
+    }
+
+    // encoded structs
+
+    use crate::rpc::{MemoryInfo, CpuUsage, ChipTemperature};
+
+    #[derive(serde::Deserialize, Debug)]
+    pub struct SystemInfo {
+        ddr_memory_usage: MemoryInfo,
+        cmx_memory_usage: MemoryInfo,
+        leon_css_memory_usage: MemoryInfo,
+        leon_mss_memory_usage: MemoryInfo,
+        leon_css_cpu_usage: CpuUsage,
+        leon_mss_cpu_usage: CpuUsage,
+        chip_temperature: ChipTemperature,
+    }
+
+    #[test]
+    fn pipeline_link() {
+        // NOTE: the stream name that shows up in output queues is dependent on what is passed
+        // through the streamname field in pipeline_properties
+
+        let mut pipe = Pipeline::new();
+        let logger = pipe.create_node::<SystemLogger>();
+        let out = pipe.create_node::<XLinkOut>();
+
+        pipe.link(logger.output(), out.input());
+
+        assert_eq!(pipe.connections.len(), 1);
+        assert_eq!(pipe.nodes.len(), 2);
+    }
+
+    #[test]
+    fn pipeline_schema() {
+        let mut pipe = Pipeline::new();
+        let logger = pipe.create_node::<SystemLogger>();
+        let mut out = pipe.create_node::<XLinkOut>();
+
+        pipe.create_output_queue(logger.output(), &mut out);
+
+        const DEVICE_ID: &str = "device_id";
+
+        let schema = pipe.build(DEVICE_ID);
+        panic!("{schema:?}");
+    }
+
+
+    #[test]
+    fn pipeline_queue() {
+        // NOTE: the stream name that shows up in output queues is dependent on what is passed
+        // through the streamname field in pipeline_properties
+
+        let mut pipe = Pipeline::new();
+        let logger = pipe.create_node::<SystemLogger>();
+        let mut out = pipe.create_node::<XLinkOut>();
+        let out2 = pipe.create_node::<XLinkOut>();
+
+        pipe.create_output_queue(logger.output(), &mut out);
+
+        assert_eq!(pipe.connections.len(), 1);
+        assert_eq!(pipe.nodes.len(), 2);
+    }
+
+
+    #[test]
+    fn pipeline_properties() {
+        // xlinkout
+        {
+            let mut w = vec![];
+            let mut properties = XLinkOutProperties::default();
+
+            properties.stream_name = String::from("__x_0_out");
+
+            let original = vec![185, 5, 136, 0, 0, 128, 191, 189, 9, 95, 95, 120, 95, 48, 95, 111, 117, 116, 0, 255, 255];
+
+            let old = RnopDeserializer::deserialize::<XLinkOutProperties>(&original).unwrap();
+
+            RnopSerializer::serialize(&properties, &mut w).unwrap();
+
+            assert_eq!(w, original);
+        }
+        // systemlogger
+        {
+            let mut w = vec![];
+            let properties = SystemLoggerProperties::default();
+            let original = vec![185, 1, 136, 0, 0, 128, 63];
+
+            // FIXME: this will error (no idea why rn)
+            //let old = RnopDeserializer::deserialize::<XLinkOutProperties>(&original).unwrap();
+            RnopSerializer::serialize(&properties, &mut w).unwrap();
+            assert_eq!(w, original);
+        }
+    }
+}
+
+mod rpc {
+    use std::collections::HashMap;
+    use crate::ConnectionStream;
+
+    pub struct Rpc<'a> {
+        inner: &'a mut ConnectionStream,
+    }
+
+    
+    impl <'a> Rpc<'a> {
+        pub fn new(stream: &'a mut ConnectionStream) -> Self {
+            Self {
+                inner: stream,
+            }
+        }
+
+        // what a silly hash function
+        fn hash_method(method_name: &str) -> u64 {
+            let mut h: u64 = 1125899906842597;
+            for b in method_name.as_bytes() {
+                h = h.wrapping_mul(31).wrapping_add(*b as u64);
+            }
+            h
+        }
+
+        const VERSION: u32 = 1;
+        const REQUEST: u32 = 1;
+        const RESPONSE: u32 = 2;
+
+        async fn call_untyped(&mut self, method: &str, params: impl Iterator<Item = rmpv::Value>) -> Result<rmpv::Value, rmpv::Value> {
+            let msg = rmpv::Value::Array([Self::VERSION.into(), Self::REQUEST.into(), Self::hash_method(method).into(), rmpv::Value::Array(params.collect())].into_iter().collect());
+
+            let mut data = vec![];
+            rmpv::encode::write_value(&mut data, &msg).unwrap();
+
+            use crate::Event;
+            let ev = Event::write(self.inner.write.id, b"", &data);
+
+            self.inner.write(ev, data).await;
+            let mut bytes = std::io::Cursor::new(self.inner.read().await);
+            let res = rmpv::decode::read_value(&mut bytes).unwrap();
+
+            let rmpv::Value::Array(mut items) = res else {
+                panic!();
+            };
+
+            if items.len() == 3 {
+                items.push(rmpv::Value::Nil);
+            }
+
+            let [version, msg_ty, status, res]: [rmpv::Value; 4] = items.try_into().unwrap();
+
+            if version != Self::VERSION.into() {
+                panic!()
+            }
+
+            if msg_ty != Self::RESPONSE.into() {
+                panic!()
+            }
+
+            if status == 1.into() {
+                Ok(res)
+            } else if status == 0.into() {
+                Err(res)
+            } else {
+                panic!()
+            }
+        }
+
+        async fn call<T: serde::de::DeserializeOwned, E: serde::de::DeserializeOwned>(&mut self, method: &str, params: impl Iterator<Item = rmpv::Value>) -> Result<T, E> {
+            self.call_untyped(method, params).await.map(|o| serde_rmpv::from_value(&o).unwrap()).map_err(|e| serde_rmpv::from_value(&e).unwrap())
+        }
+
+        pub async fn is_running(&mut self) -> bool {
+            self.call::<_, String>("isRunning", [].into_iter()).await.unwrap()
+        }
+
+        pub async fn enable_crash_dump(&mut self, enable: bool) -> Result<(), String>{
+            self.call_untyped("enableCrashDump", [enable.into()].into_iter()).await.map_err(|e| serde_rmpv::from_value::<String>(&e).unwrap())?;
+            Ok(())
+        }
+
+        pub async fn mxid(&mut self) -> Result<String, String> {
+            self.call("getMxId", [].into_iter()).await
+        }
+
+        pub async fn connected_cameras(&mut self) -> Result<Vec<CameraBoardSocket>, String> {
+            self.call("getConnectedCameras", [].into_iter()).await
+        }
+
+        pub async fn connection_interfaces(&mut self) -> Result<Vec<ConnectionInterface>, String> {
+            self.call("getConnectionInterfaces", [].into_iter()).await
+        }
+
+        pub async fn connected_camera_features(&mut self) -> Result<Vec<CameraFeatures>, String> {
+            self.call("getConnectedCameraFeatures", [].into_iter()).await
+        }
+        /*
+        async fn connected_camera_features(&mut self) -> Result<rmpv::Value, rmpv::Value> {
+            self.call_untyped("getConnectedCameraFeatures", [].into_iter()).await
+        }
+        */
+
+        pub async fn stereo_pairs(&mut self) -> Result<Vec<StereoPair>, String> {
+            self.call("getStereoPairs", [].into_iter()).await
+        }
+
+        pub async fn camera_sensor_names(&mut self) -> Result<HashMap<CameraBoardSocket, String>, String> {
+            let names = self.call_untyped("getCameraSensorNames", [].into_iter()).await.map_err(|e| serde_rmpv::from_value::<String>(&e).unwrap())?;
+
+            let rmpv::Value::Array(names) = names else {
+                panic!()
+            };
+
+            let mut map = HashMap::new();
+
+            for pair in names {
+                let rmpv::Value::Array(vals) = pair else {
+                    panic!();
+                };
+
+                let [sock, name]: [rmpv::Value; 2] = vals.try_into().unwrap() else {
+                    panic!();
+                };
+                let sock = serde_rmpv::from_value(&sock).unwrap();
+                let name = serde_rmpv::from_value(&name).unwrap();
+                map.insert(sock, name);
+            }
+            Ok(map)
+        }
+        /*
+        async fn camera_sensor_names(&mut self) -> Result<HashMap<CameraBoardSocket, String>, String> {
+            self.call("getCameraSensorNames", [].into_iter()).await
+        }
+        */
+
+        pub async fn connected_imu(&mut self) -> Result<String, String> {
+            self.call("getConnectedIMU", [].into_iter()).await
+        }
+
+        pub async fn crash_device(&mut self) -> Result<rmpv::Value, rmpv::Value> {
+            self.call_untyped("crashDevice", [].into_iter()).await
+        }
+
+        pub async fn external_strobe_enable(&mut self, enable: bool) -> Result<rmpv::Value, rmpv::Value> {
+            self.call_untyped("setExternalStrobeEnable", [enable.into()].into_iter()).await
+        }
+
+        pub async fn imu_firmware_version(&mut self) -> Result<String, String> {
+            self.call("getIMUFirmwareVersion", [].into_iter()).await
+        }
+
+        pub async fn embedded_imu_firmware_version(&mut self) -> Result<String, String> {
+            self.call("getEmbeddedIMUFirmwareVersion", [].into_iter()).await
+        }
+
+        pub async fn ddr_memory_usage(&mut self) -> Result<MemoryInfo, String> {
+            self.call("getDdrUsage", [].into_iter()).await
+        }
+        
+        pub async fn cmx_memory_usage(&mut self) -> Result<MemoryInfo, String> {
+            self.call("getCmxUsage", [].into_iter()).await
+        }
+
+        pub async fn leon_css_heap_usage(&mut self) -> Result<MemoryInfo, String> {
+            self.call("getLeonCssHeapUsage", [].into_iter()).await
+        }
+
+        pub async fn leon_mss_heap_usage(&mut self) -> Result<MemoryInfo, String> {
+            self.call("getLeonMssHeapUsage", [].into_iter()).await
+        }
+
+        pub async fn chip_temperature(&mut self) -> Result<ChipTemperature, String> {
+            self.call("getChipTemperature", [].into_iter()).await
+        }
+
+        pub async fn leon_css_cpu_usage(&mut self) -> Result<CpuUsage, String> {
+            self.call("getLeonCssCpuUsage", [].into_iter()).await
+        }
+
+        pub async fn leon_mss_cpu_usage(&mut self) -> Result<CpuUsage, String> {
+            self.call("getLeonMssCpuUsage", [].into_iter()).await
+        }
+
+        pub async fn process_memory_usage(&mut self) -> Result<i64, String> {
+            self.call("getProcessMemoryUsage", [].into_iter()).await
+        }
+
+        pub async fn usb_speed(&mut self) -> Result<UsbSpeed, String> {
+            self.call("getUsbSpeed", [].into_iter()).await
+        }
+
+        pub async fn is_neural_depth_supported(&mut self) -> Result<bool, String> {
+            self.call("isNeuralDepthSupported", [].into_iter()).await
+        }
+
+        pub async fn is_pipeline_running(&mut self) -> Result<bool, String> {
+            self.call("isPipelineRunning", [].into_iter()).await
+        }
+
+        pub async fn set_log_level(&mut self, log_level: LogLevel) -> Result<rmpv::Value, rmpv::Value> {
+            self.call_untyped("setLogLevel", [(log_level as u8).into()].into_iter()).await
+        }
+
+        pub async fn set_node_log_level(&mut self, node_id: i64, log_level: LogLevel) -> Result<rmpv::Value, rmpv::Value> {
+            self.call_untyped("setNodeLogLevel", [node_id.into(), (log_level as u8).into()].into_iter()).await
+        }
+
+        pub async fn log_level(&mut self) -> Result<u32, String> {
+            self.call("getLogLevel", [].into_iter()).await
+        }
+
+        pub async fn node_log_level(&mut self, node_id: u64) -> Result<u32, String> {
+            self.call("getNodeLogLevel", [node_id.into()].into_iter()).await
+        }
+
+        pub async fn xlink_chunk_size(&mut self) -> Result<i32, String> {
+            self.call("getXLinkChunkSize", [].into_iter()).await
+        }
+
+        pub async fn set_ir_laser_dot_projector_intensity(&mut self, intensity: f32, mask: i32) -> Result<i32, String> {
+            self.call("setIrLaserDotProjectorBrightness", [intensity.into(), mask.into(), true.into()].into_iter()).await
+        }
+
+        pub async fn set_ir_floodlight_intensity(&mut self, intensity: f32, mask: i32) -> Result<i32, String> {
+            self.call("setIrFloodLightBrightness", [intensity.into(), mask.into(), true.into()].into_iter()).await
+        }
+
+        pub async fn ir_drivers(&mut self) -> Result<Option<(String, i32, i32)>, String> {
+            let items = self.call_untyped("getIrDrivers", [].into_iter()).await.map_err(|e| serde_rmpv::from_value::<String>(&e).unwrap())?;
+            let rmpv::Value::Array(items) = items else {
+                panic!();
+            };
+
+            if items.is_empty() {
+                return Ok(None)
+            }
+
+            let [name, v1, v2]: [rmpv::Value; 3] = items.try_into().unwrap();
+
+            Ok(Some((serde_rmpv::from_value(&name).unwrap(), serde_rmpv::from_value(&v1).unwrap(), serde_rmpv::from_value(&v2).unwrap())))
+        }
+
+        /*
+        async fn crash_dump(&mut self, clear: bool) -> Result<rmpv::Value, rmpv::Value> {
+            self.call_untyped("getCrashDump", [clear.into()].into_iter()).await
+        }
+        */
+        pub async fn crash_dump(&mut self, clear: bool) -> Result<CrashDump, String> {
+            self.call("getCrashDump", [clear.into()].into_iter()).await
+        }
+
+        pub async fn has_crash_dump(&mut self) -> Result<bool, String> {
+            self.call("hasCrashDump", [].into_iter()).await
+        }
+
+        const DEFAULT_TIMESYNC_PERIOD: std::time::Duration = std::time::Duration::from_millis(1000);
+        const DEFAULT_TIMESYNC_SAMPLE_COUNT: u32 = 1000;
+        const DEFAULT_TIMESYNC_RANDOM: bool = false;
+        pub async fn set_timesync(&mut self, period: Option<std::time::Duration>, sample_count: Option<u32>, random: Option<bool>, enable: bool) -> Result<rmpv::Value, rmpv::Value> {
+            let (period, sample_count, random) = if !enable {
+                (std::time::Duration::from_millis(1000), 0, false)
+            } else {
+                (period.unwrap_or(Self::DEFAULT_TIMESYNC_PERIOD), sample_count.unwrap_or(Self::DEFAULT_TIMESYNC_SAMPLE_COUNT), random.unwrap_or(Self::DEFAULT_TIMESYNC_RANDOM))
+            };
+
+            let millis = period.as_millis();
+
+            if millis < 10 || millis > (u32::MAX as u128) {
+                panic!()
+            }
+
+            let millis = millis as u32;
+
+            self.call_untyped("setTimesync", [millis.into(), sample_count.into(), random.into()].into_iter()).await
+        }
+
+        pub async fn set_system_information_logging_rate(&mut self, hz: f32) -> Result<rmpv::Value, rmpv::Value> {
+            self.call_untyped("setSystemInformationLoggingRate", [hz.into()].into_iter()).await
+        }
+
+        pub async fn system_information_logging_rate(&mut self) -> Result<f32, String> {
+            self.call("getSystemInformationLoggingRate", [].into_iter()).await
+        }
+        pub async fn is_eeprom_available(&mut self) -> Result<bool, String> {
+            self.call("isEepromAvailable", [].into_iter()).await
+        }
+
+        pub async fn calibration(&mut self) -> Result<EepromData, String> {
+            let res = self.call_untyped("getCalibration", [].into_iter()).await.map_err(|e| serde_rmpv::from_value::<String>(&e).unwrap())?;
+            Ok(Self::parse_calibration(res))
+        }
+
+        pub async fn calibration2(&mut self) -> Result<EepromData, String> {
+            let res = self.call_untyped("readFromEeprom", [].into_iter()).await.map_err(|e| serde_rmpv::from_value::<String>(&e).unwrap())?;
+            Ok(Self::parse_calibration(res))
+        }
+
+        fn parse_calibration(val: rmpv::Value) -> EepromData {
+            let rmpv::Value::Array(mut items) = val else {
+                panic!();
+            };
+
+            let [_, _, data]: [rmpv::Value; 3] = items.try_into().unwrap();
+            serde_rmpv::from_value(&data).unwrap()
+        }
+
+        pub async fn set_pipeline_schema(&mut self, schema: PipelineSchema) -> Result<rmpv::Value, rmpv::Value> {
+            let val = serde_rmpv::to_value(&schema).unwrap();
+            self.call_untyped("setPipelineSchema", [val].into_iter()).await
+        }
+
+        pub async fn wait_for_device_ready(&mut self) -> Result<rmpv::Value, rmpv::Value> {
+            self.call_untyped("waitForDeviceReady", [].into_iter()).await
+        }
+
+        pub async fn build_pipeline(&mut self) -> Result<rmpv::Value, rmpv::Value> {
+            self.call_untyped("buildPipeline", [].into_iter()).await
+        }
+
+        pub async fn start_pipeline(&mut self) -> Result<rmpv::Value, rmpv::Value> {
+            self.call_untyped("startPipeline", [].into_iter()).await
+        }
+    }
+
+    #[derive(serde_repr::Deserialize_repr, serde_repr::Serialize_repr, Debug, Hash, PartialEq, Eq)]
+    #[repr(i32)]
+    pub enum CameraBoardSocket {
+        Auto = -1,
+        A = 0,
+        B = 1,
+        C = 2,
+        D = 3, // also known as vertical
+        E = 4,
+        F = 5,
+        G = 6,
+        H = 7,
+        I = 8,
+        J = 9,
+    }
+
+    #[derive(serde_repr::Deserialize_repr, Debug)]
+    #[repr(i32)]
+    pub enum ConnectionInterface {
+        Usb = 0,
+        Ethernet = 1,
+        Wifi = 2,
+    }
+
+    #[derive(serde::Deserialize, Debug)]
+    pub struct CameraFeatures {
+        socket: CameraBoardSocket,
+        #[serde(rename = "sensorName")]
+        sensor_name: String,
+        width: i32,
+        height: i32,
+        orientation: CameraImageOrientation,
+        #[serde(rename = "supportedTypes")]
+        supported_types: Vec<CameraSensorType>,
+        #[serde(rename = "hasAutofocusIC")]
+        has_autofocus_ic: bool,
+        #[serde(rename = "hasAutofocus")]
+        has_autofocus: bool,
+        name: String,
+        #[serde(rename = "additionalNames")]
+        additional_names: Vec<String>,
+        configs: Vec<CameraSensorConfig>,
+        #[serde(rename = "calibrationResolution")]
+        calibration_resolution: Option<CameraSensorConfig>,
+    }
+
+    #[derive(serde_repr::Deserialize_repr, Debug)]
+    #[repr(i32)]
+    pub enum CameraSensorType {
+        Auto = -1,
+        Color = 0,
+        Mono = 1,
+        Tof = 2,
+        Thermal = 3,
+    }
+
+    #[derive(serde::Deserialize, Debug)]
+    pub struct CameraSensorConfig {
+        width: i32,
+        height: i32,
+        #[serde(rename = "minFps")]
+        min_fps: f32,
+        #[serde(rename = "maxFps")]
+        max_fps: f32,
+        fov: Rect,
+        #[serde(rename = "type")]
+        ty: CameraSensorType,
+    }
+
+    #[derive(serde::Deserialize, Debug)]
+    pub struct Rect {
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        normalized: bool,
+        #[serde(rename = "hasNormalized")]
+        has_normalized: bool,
+    }
+
+    #[derive(serde_repr::Deserialize_repr, Debug)]
+    #[repr(i32)]
+    pub enum CameraImageOrientation {
+        Auto = -1,
+        Normal = 0,
+        HorizontalMirror = 1,
+        VerticalFlip = 2,
+        Rotate180 = 3,
+    }
+
+    #[derive(serde::Deserialize, Debug)]
+    pub struct StereoPair {
+        left: CameraBoardSocket,
+        right: CameraBoardSocket,
+        baseline: f32,
+        #[serde(rename = "isVertical")]
+        is_vertical: bool,
+    }
+
+    #[derive(serde::Deserialize, Debug)]
+    pub struct MemoryInfo {
+        remaining: i64,
+        used: i64,
+        total: i64,
+    }
+
+    #[derive(serde::Deserialize, Debug)]
+    pub struct ChipTemperature {
+        css: f32,
+        mss: f32,
+        upa: f32,
+        dss: f32,
+        average: f32,
+    }
+
+    #[derive(serde::Deserialize, Debug)]
+    pub struct CpuUsage {
+        average: f32,
+        #[serde(rename = "msTime")]
+        ms_time: i32,
+    }
+
+    #[derive(serde_repr::Deserialize_repr, Debug)]
+    #[repr(u32)]
+    pub enum UsbSpeed {
+        Unknown = 0,
+        Low = 1,
+        Full = 2,
+        High = 3,
+        Super = 4,
+        SuperPlus = 5,
+    }
+
+    #[derive(serde_repr::Deserialize_repr, serde_repr::Serialize_repr, Debug, Clone, Copy)]
+    #[repr(u8)]
+    pub enum LogLevel {
+        Trace = 0,
+        Debug = 1,
+        Info = 2,
+        Warn = 3,
+        Error = 4,
+        Critical = 5,
+        Off = 6,
+    }
+
+    #[derive(serde::Deserialize, serde::Serialize, Debug)]
+    pub struct EepromData {
+        version: u32,
+        #[serde(rename = "productName")]
+        product_name: String,
+        #[serde(rename = "boardCustom")]
+        board_custom: String,
+        #[serde(rename = "boardName")]
+        board_name: String,
+        #[serde(rename = "boardRev")]
+        board_rev: String,
+        #[serde(rename = "boardConf")]
+        board_conf: String,
+        #[serde(rename = "hardwareConf")]
+        hardware_conf: String,
+        #[serde(rename = "deviceName")]
+        device_name: String,
+        #[serde(rename = "batchName")]
+        batch_name: Option<String>,
+        #[serde(rename = "batchTime")]
+        batch_time: u64,
+        #[serde(rename = "boardOptions")]
+        board_options: u32,
+        #[serde(rename = "cameraData")]
+        camera_data: Vec<(CameraBoardSocket, CameraInfo)>,
+        #[serde(rename = "stereoRectificationData")]
+        stereo_rectification: StereoRectification,
+        #[serde(rename = "imuExtrinsics")]
+        imu_extrinsics: Extrinsics,
+        #[serde(rename = "housingExtrinsics")]
+        housing_extrinsisc: Extrinsics,
+        #[serde(rename = "miscellaneousData")]
+        misc_data: Vec<u8>,
+        #[serde(rename = "stereoUseSpecTranslation")]
+        stereo_use_spec_translation: bool,
+        #[serde(rename = "stereoEnableDistortionCorrection")]
+        stereo_enable_distortion_correction: bool,
+        #[serde(rename = "verticalCameraSocket")]
+        vertical_camera_socket: CameraBoardSocket,
+    }
+
+    #[derive(serde::Deserialize, serde::Serialize, Debug)]
+    pub struct StereoRectification {
+        #[serde(rename = "rectifiedRotationLeft")]
+        rectified_rotation_left: Vec<Vec<f32>>,
+        #[serde(rename = "rectifiedRotationRight")]
+        rectified_rotation_right: Vec<Vec<f32>>,
+        #[serde(rename = "leftCameraSocket")]
+        left_camera_socket: CameraBoardSocket,
+        #[serde(rename = "rightCameraSocket")]
+        right_camera_socket: CameraBoardSocket,
+    }
+
+    #[derive(serde::Deserialize, serde::Serialize, Debug)]
+    pub struct CameraInfo {
+        width: u16,
+        height: u16,
+        #[serde(rename = "lensPosition")]
+        lens_position: u8,
+        #[serde(rename = "intrinsicMatrix")]
+        intrinsic_matrix: Vec<Vec<f32>>,
+        #[serde(rename = "distortionCoeff")]
+        distortion_coef: Vec<f32>,
+        extrinsics: Extrinsics,
+        #[serde(rename = "specHfovDeg")]
+        fov_deg: f32,
+        #[serde(rename = "cameraType")]
+        ty: CameraModel,
+    }
+
+    #[derive(serde_repr::Deserialize_repr, serde_repr::Serialize_repr, Debug)]
+    #[repr(i8)]
+    pub enum CameraModel {
+        Perspective = 0,
+        Fisheye = 1,
+        Equirectangular = 2,
+        RadialDivision = 3,
+    }
+
+    #[derive(serde::Deserialize, serde::Serialize, Debug)]
+    pub struct Extrinsics {
+        #[serde(rename = "rotationMatrix")]
+        rotation_mtx: Vec<Vec<f32>>,
+        translation: Point3f,
+        #[serde(rename = "specTranslation")]
+        spec_translation: Point3f,
+        #[serde(rename = "toCameraSocket")]
+        to_camera_socket: CameraBoardSocket,
+    }
+
+    #[derive(serde::Deserialize, serde::Serialize, Debug)]
+    pub struct Point3f {
+        x: f32,
+        y: f32,
+        z: f32,
+    }
+
+    #[derive(serde::Deserialize, Debug)]
+    pub struct CrashDump {
+        #[serde(rename = "crashReports")]
+        crash_reports: Vec<CrashReport>,
+        #[serde(rename = "depthaiCommitHash")]
+        dai_commit_hash: String,
+        #[serde(rename = "deviceId")]
+        device_id: String,
+    }
+
+    #[derive(serde::Deserialize, Debug)]
+    pub struct CrashReport {
+        processor: ProcessorType,
+        #[serde(rename = "errorSource")]
+        error_source: String,
+        #[serde(rename = "crashedThreadId")]
+        crashed_thread_id: u32,
+        #[serde(rename = "errorSourceInfo")]
+        error_source_info: ErrorSourceInfo,
+        #[serde(rename = "threadCallstack")]
+        thread_callstack: Vec<ThreadCallstack>,
+        prints: Vec<String>,
+        #[serde(rename = "uptimeNs")]
+        uptime_ns: u64,
+        #[serde(rename = "timerRaw")]
+        timer_raw: u64,
+        #[serde(rename = "statusFlags")]
+        status_flags: u64,
+    }
+
+    #[derive(serde::Deserialize, Debug)]
+    pub struct ErrorSourceInfo {
+        #[serde(rename = "assertContext")]
+        assert_context: AssertContext,
+        #[serde(rename = "trapContext")]
+        trap_context: TrapContext,
+        #[serde(rename = "errorId")]
+        error_id: u32,
+    }
+
+    #[derive(serde::Deserialize, Debug)]
+    pub struct AssertContext {
+        #[serde(rename = "fileName")]
+        file_name: String,
+        #[serde(rename = "functionName")]
+        function_name: String,
+        line: u32,
+    }
+
+    #[derive(serde::Deserialize, Debug)]
+    pub struct TrapContext {
+        #[serde(rename = "trapNumber")]
+        trap_number: u32,
+        #[serde(rename = "trapAddress")]
+        trap_address: u32,
+        #[serde(rename = "trapName")]
+        trap_name: String,
+    }
+
+    #[derive(serde::Deserialize, Debug)]
+    pub struct ThreadCallstack {
+        #[serde(rename = "threadId")]
+        thread_id: u32,
+        #[serde(rename = "threadName")]
+        thread_name: String,
+        #[serde(rename = "threadStatus")]
+        thread_status: String,
+        #[serde(rename = "stackBottom")]
+        stack_bottom: u32,
+        #[serde(rename = "stackTop")]
+        stack_top: u32,
+        #[serde(rename = "stackPointer")]
+        stack_pointer: u32,
+        #[serde(rename = "instructionPointer")]
+        instruction_pointer: u32,
+        #[serde(rename = "callStack")]
+        callstack: Vec<CallstackContext>,
+    }
+
+    #[derive(serde::Deserialize, Debug)]
+    pub struct CallstackContext {
+        #[serde(rename = "callSite")]
+        callsite: u32,
+        #[serde(rename = "calledTarget")]
+        called_target: u32,
+        #[serde(rename = "framePointer")]
+        frame_pointer: u32,
+        context: String,
+    }
+
+    #[derive(serde_repr::Deserialize_repr, Debug)]
+    #[repr(i32)]
+    pub enum ProcessorType {
+        LeonCss = 0,
+        LeonMss = 1,
+        Cpu = 2,
+        Dsp = 3,
+    }
+
+    // below is for starting pipeline stuff
+
+    #[derive(serde::Deserialize, serde::Serialize, Debug)]
+    pub struct PipelineSchema {
+        pub connections: Vec<NodeConnectionSchema>,
+        #[serde(rename = "globalProperties")]
+        pub global_properties: GlobalProperties,
+        pub nodes: Vec<(i64, NodeObjInfo)>,
+        pub bridges: Vec<(i64, i64)>,
+    }
+
+    #[derive(serde::Deserialize, serde::Serialize, Debug, PartialEq, Eq)]
+    pub struct NodeConnectionSchema {
+        #[serde(rename = "node1Id")]
+        pub output_id: i64,
+        #[serde(rename = "node1OutputGroup")]
+        pub output_group: String,
+        #[serde(rename = "node1Output")]
+        pub output: String,
+        #[serde(rename = "node2Id")]
+        pub input_id: i64,
+        #[serde(rename = "node2InputGroup")]
+        pub input_group: String,
+        #[serde(rename = "node2Input")]
+        pub input: String,
+    }
+
+    #[derive(serde::Deserialize, serde::Serialize, Debug)]
+    pub struct GlobalProperties {
+        #[serde(rename = "leonCssFrequencyHz")]
+        pub leon_css_frequency_hz: f32,
+        #[serde(rename = "leonMssFrequencyHz")]
+        pub leon_mss_frequency_hz: f32,
+        #[serde(rename = "pipelineName")]
+        pub pipeline_name: Option<String>,
+        #[serde(rename = "pipelineVersion")]
+        pub pipeline_version: Option<String>,
+        #[serde(rename = "calibData")]
+        pub calibration: Option<EepromData>,
+        #[serde(rename = "eepromId")]
+        pub eeprom_id: Option<u32>,
+        #[serde(rename = "cameraTuningBlobSize")]
+        pub camera_tuning_blob_size: Option<u32>,
+        #[serde(rename = "cameraTuningBlobUri")]
+        pub camera_tuning_blob_uri: String,
+        #[serde(rename = "cameraSocketTuningBlobSize")]
+        pub camera_socket_tuning_blob_size: Vec<(CameraBoardSocket, u32)>,
+        #[serde(rename = "cameraSocketTuningBlobUri")]
+        pub camera_socket_tuning_blob_uri: Vec<(CameraBoardSocket, String)>,
+        #[serde(rename = "xlinkChunkSize")]
+        pub xlink_chunk_size: i32,
+        #[serde(rename = "sippBufferSize")]
+        pub sipp_buffer_size: u32,
+        #[serde(rename = "sippDmaBufferSize")]
+        pub sipp_dma_buffer_size: u32,
+    }
+
+    impl core::default::Default for GlobalProperties {
+        fn default() -> Self {
+            Self {
+                leon_css_frequency_hz: 700. * 1000. * 1000.,
+                leon_mss_frequency_hz: 700. * 1000. * 1000.,
+                pipeline_name: None,
+                pipeline_version: None,
+                calibration: None,
+                eeprom_id: Some(0),
+                camera_tuning_blob_size: None,
+                camera_tuning_blob_uri: String::new(),
+                camera_socket_tuning_blob_size: Default::default(),
+                camera_socket_tuning_blob_uri: Default::default(),
+                xlink_chunk_size: -1,
+                sipp_buffer_size: Self::SIPP_BUFFER_DEFAULT_SIZE,
+                sipp_dma_buffer_size: Self::SIPP_DMA_BUFFER_DEFAULT_SIZE,
+            }
+        }
+    }
+
+    impl GlobalProperties {
+        pub const SIPP_BUFFER_DEFAULT_SIZE: u32 = 18 * 1024;
+        pub const SIPP_DMA_BUFFER_DEFAULT_SIZE: u32 = 16 * 1024;
+    }
+
+    #[derive(serde::Deserialize, serde::Serialize, Debug)]
+    pub struct NodeObjInfo {
+        pub id: i64,
+        #[serde(rename = "parentId")]
+        pub parent_id: i64,
+        pub name: String,
+        pub alias: String,
+        #[serde(rename = "deviceId")]
+        pub device_id: String,
+        #[serde(rename = "deviceNode")]
+        pub device_node: bool,
+        pub properties: Vec<u8>,
+        #[serde(rename = "logLevel")]
+        pub log_level: LogLevel,
+        #[serde(rename = "ioInfo")]
+        pub io_info: Vec<((String, String), NodeIoInfo)>,
+    }
+
+    #[derive(serde::Deserialize, serde::Serialize, Debug)]
+    pub struct NodeIoInfo {
+        pub group: String,
+        pub name: String,
+        #[serde(rename = "type")]
+        pub ty: NodeType,
+        pub blocking: bool,
+        #[serde(rename = "queueSize")]
+        pub queue_size: i32,
+        #[serde(rename = "waitForMessage")]
+        pub wait_for_message: bool,
+        pub id: u32,
+    }
+
+    #[derive(serde_repr::Deserialize_repr, serde_repr::Serialize_repr, Debug)]
+    #[repr(u8)]
+    pub enum NodeType {
+        MSender = 0,
+        SSender = 1,
+        MReceiver = 2,
+        SReceiver = 3,
+    }
+    // end of pipeline
 }
