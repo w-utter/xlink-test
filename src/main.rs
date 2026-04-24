@@ -414,16 +414,67 @@ async fn main() {
 
         const DEVICE_ID: &str = "19443010A1A1872D00";
 
-        let schema = {
+        fn systeminfo_pipeline() -> (rpc::PipelineSchema, pipeline::OutputQueue<pipeline::SystemInfo, pipeline::RnopDeserializer, pipeline::queue_state::Pending>) {
             let mut pipe = pipeline::Pipeline::new();
-            let logger = pipe.create_node::<pipeline::SystemLogger>();
+            let mut log = pipe.create_node::<pipeline::SystemLogger>();
+
             let mut out = pipe.create_node::<pipeline::XLinkOut>();
 
-            pipe.create_output_queue(logger.output(), &mut out);
-            pipe.build(DEVICE_ID)
-        };
+            let xlink_out = pipe.create_output_queue(log.output(), &mut out);
+            (pipe.build(DEVICE_ID), xlink_out)
+        }
 
-        connection.create_stream("__x_0_out", bootloader::MAX_PACKET_SIZE).await.unwrap();
+        fn imu_pipeline() -> (rpc::PipelineSchema, pipeline::OutputQueue<pipeline::ImuData, pipeline::RnopDeserializer, pipeline::queue_state::Pending>) {
+            let mut pipe = pipeline::Pipeline::new();
+            let mut imu = pipe.create_node::<pipeline::Imu>();
+
+
+            imu.properties_mut().enable_sensor(pipeline::ImuSensorKind::Accelerometer, 400);
+            imu.properties_mut().enable_sensor(pipeline::ImuSensorKind::GyroscopeCalibrated, 400);
+
+
+            let mut out = pipe.create_node::<pipeline::XLinkOut>();
+
+            let xlink_out = pipe.create_output_queue(imu.output(), &mut out);
+            (pipe.build(DEVICE_ID), xlink_out)
+        }
+
+        fn camera_pipeline() -> (rpc::PipelineSchema, pipeline::OutputQueue<pipeline::CameraFrame, pipeline::RnopDeserializer, pipeline::queue_state::Pending>) {
+            let mut pipe = pipeline::Pipeline::new();
+            let mut camera = pipe.create_node::<pipeline::Camera>();
+
+            let mut out = pipe.create_node::<pipeline::XLinkOut>();
+
+            let xlink_out = pipe.create_output_queue(camera.raw_camera_output(), &mut out);
+            (pipe.build(DEVICE_ID), xlink_out)
+        }
+
+        fn camera_pipeline_dynamic() -> (rpc::PipelineSchema, pipeline::OutputQueue<pipeline::CameraFrame, pipeline::RnopDeserializer, pipeline::queue_state::Pending>, pipeline::OutputQueue<pipeline::CameraFrame, pipeline::RnopDeserializer, pipeline::queue_state::Pending>) {
+            let mut pipe = pipeline::Pipeline::new();
+            let mut camera = pipe.create_node::<pipeline::Camera>();
+            let mut out_1 = pipe.create_node::<pipeline::XLinkOut>();
+            let mut out_2 = pipe.create_node::<pipeline::XLinkOut>();
+
+            let id = camera.request_output(pipeline::CameraCapability {
+                size: pipeline::Capability::new_single((1920, 1200)),
+                fps: pipeline::Capability::new_none(),
+                ty: None,
+                enable_undistortion: None,
+                isp_output: true,
+                resize_mode: pipeline::FrameResize::Crop,
+            });
+
+            let output = camera.requested_camera_outputs().next().unwrap();
+
+            let xlink_out1 = pipe.create_output_queue(output, &mut out_1);
+            let xlink_out2 = pipe.create_output_queue(camera.raw_camera_output(), &mut out_2);
+            (pipe.build(DEVICE_ID), xlink_out1, xlink_out2)
+        }
+
+        let (schema, out1, out2) = camera_pipeline_dynamic();
+
+
+        //connection.create_stream("__x_0_out", bootloader::MAX_PACKET_SIZE).await.unwrap();
 
         let ret = rpc.set_pipeline_schema(schema).await;
         println!("{ret:?}");
@@ -437,19 +488,18 @@ async fn main() {
         let ret = rpc.start_pipeline().await;
         println!("{ret:?}");
 
-        connection.wait_for_stream("__x_0_out").await;
-
-        let out_name = StreamName::new(&"__x_0_out".as_bytes()).unwrap();
-
-        let mut output = connection.created_streams.remove(&out_name).unwrap();
-        println!("xout: {output:?}");
+        let mut queue1 = connection.wait_for_output_queue(out1).await;
+        let mut queue2 = connection.wait_for_output_queue(out2).await;
 
         loop {
-            let mut bytes = output.read().await;
-
-            let val = rnop::Value::parse(&bytes).unwrap();
-            let val = rnop::from_value::<pipeline::SystemInfo>(val).unwrap();
-            println!("\n{val:?}");
+            tokio::select! {
+                r = queue1.read() => {
+                    println!("received custom: {:?}", r.unwrap().0);
+                }
+                r = queue2.read() => {
+                    println!("received raw: {:?}", r.unwrap().0);
+                }
+            }
         }
     }
 }
@@ -767,16 +817,6 @@ impl ConnectionStream {
 
     async fn read(&mut self) -> Vec<u8> {
         let bytes = self.reader.recv().await.unwrap();
-        /*
-        let ev = Event::read_release(self.read.id, b"", bytes.len() as _);
-
-        // the write id / read release id in the header need to be the same i think
-        //  - not the stream_id, but the actual id.
-
-
-
-        self.writer.send(StreamEvent::ReadRelease(ev.header)).await.unwrap();
-        */
         bytes
     }
 }
@@ -833,93 +873,19 @@ impl Connection {
 
     async fn create_stream(&mut self, name: &str, write_size: u32) -> std::io::Result<()> {
         let name_bytes = name.as_bytes();
+        self.create_stream_bytes(name_bytes, write_size).await
+    }
 
+    async fn create_stream_bytes(&mut self, name: &[u8], write_size: u32) -> std::io::Result<()> {
         let stream_id = self.next_stream_id;
 
-        let ev = Event::create_stream(stream_id, &name_bytes, write_size);
+        let ev = Event::create_stream(stream_id, &name, write_size);
 
         self.next_stream_id += 1;
 
         let stream_name = ev.header.name;
 
         self.device_events.send(DeviceEvent::CreateStream(ev.header)).await.unwrap();
-
-
-        /*
-        self.requested_streams.insert(stream_name, (WriteStreamInfo {
-            write_size,
-            id: stream_id,
-        }, false));
-
-        let mut read_buf = [0; 128];
-
-
-        // might be better to have a background task running on the read side of the tcp stream
-        // the thread should have both tx & rx for acking
-        // then just send stuff over channels
-        //
-        // can just run the tcpstream seperately and communicate bidirectionally with channels?
-        // - stuff doesnt need to be split up and everything else stays roughly the same
-        // - need to have smth similar to blocking evs
-        // - might as well also refactor the event stuff afterward
-        
-        use tokio::io::AsyncReadExt;
-        loop {
-            let len = self.inner.read(&mut read_buf).await.unwrap();
-            let buf = &read_buf[..core::cmp::min(len, core::mem::size_of::<EventHeader>())];
-
-            if len < core::mem::size_of::<EventHeader>() {
-                continue;
-            }
-
-            let stream = bytemuck::from_bytes::<EventHeader>(buf);
-
-            println!("while creating stream: {stream:?}");
-
-            let Ok(ty) = EventType::try_from(stream.ty) else {
-                continue;
-            };
-
-            match ty {
-                EventType::CreateStreamReq => {
-                    self.send_event(Event::acknowledge_stream(stream.stream_id, &stream.name.0, stream.size, stream.id)).await.unwrap();
-
-                    if let Some(existing) = self.requested_stream_finished(&stream.name) {
-                        self.created_streams.insert(stream.name, (ReadStreamInfo {
-                            read_size: stream.size,
-                            id: stream.stream_id,
-                        }, existing));
-
-                        if stream.name.as_bytes() == name_bytes {
-                            return Ok(())
-                        }
-                    } else {
-                        self.device_requested_streams.insert(stream.name, ReadStreamInfo {
-                            read_size: stream.size,
-                            id: stream.stream_id,
-                        });
-                    }
-                }
-                EventType::CreateStreamResp => {
-                    if let Some(existing) = self.device_requested_streams.remove(&stream.name) {
-                        let (host_requested, _) = self.requested_streams.remove(&stream.name).unwrap();
-
-                        self.created_streams.insert(stream.name, (existing, host_requested));
-
-                        if stream.name.as_bytes() == name_bytes {
-                            return Ok(())
-                        }
-                    } else {
-                        let (_, acked) = self.requested_streams.get_mut(&stream.name).unwrap();
-                        *acked = true;
-                    }
-                }
-
-                _ => continue,
-            }
-        }
-        */
-
         Ok(())
     }
 
@@ -941,7 +907,9 @@ impl Connection {
     }
 
     async fn wait_for_stream(&mut self, name: &str) {
-        if self.created_streams.get(name.as_bytes()).is_some() {
+        let name = StreamName::new(&name.as_bytes()).unwrap();
+
+        if self.created_streams.get(&name).is_some() {
             return
         }
 
@@ -953,7 +921,7 @@ impl Connection {
             match ev {
                 IoEvent::CreatedStream(created_name, stream) => {
                     self.created_streams.insert(created_name, stream);
-                    if created_name.as_bytes() == name.as_bytes() {
+                    if created_name == name {
                         return;
                     }
                 }
@@ -989,6 +957,38 @@ impl Connection {
             match ev {
                 IoEvent::Shutdown => return,
                 o => panic!("{o:?}"),
+            }
+        }
+    }
+
+    async fn wait_for_output_queue<O, D>(&mut self, queue: pipeline::OutputQueue<O, D, pipeline::queue_state::Pending>) -> pipeline::OutputQueue<O, D, pipeline::queue_state::Ready> {
+        let name = queue.state.0;
+
+        if let Some(stream) = self.created_streams.remove(&name) {
+            return pipeline::OutputQueue {
+                state: pipeline::queue_state::Ready(stream),
+                _pd: core::marker::PhantomData,
+            };
+        }
+
+        self.create_stream_bytes(name.as_bytes(), bootloader::MAX_PACKET_SIZE).await.unwrap();
+
+        loop {
+            let Some(ev) = self.io_events.recv().await else {
+                panic!()
+            };
+
+            match ev {
+                IoEvent::CreatedStream(created_name, stream) => {
+                    if created_name == name {
+                        return pipeline::OutputQueue {
+                            state: pipeline::queue_state::Ready(stream),
+                            _pd: core::marker::PhantomData,
+                        };
+                    }
+                    self.created_streams.insert(created_name, stream);
+                }
+                o => panic!("{o:?}")
             }
         }
     }
@@ -1579,6 +1579,7 @@ enum DeviceEvent {
 async fn io_thread(mut stream: tokio::net::TcpStream, io_evs: mpsc::Sender<IoEvent>, mut device_evs: mpsc::Receiver<DeviceEvent>) {
 
     let mut header_buf = [0; 128];
+    let mut header_offset = 0;
 
     use tokio::io::AsyncReadExt;
 
@@ -1626,7 +1627,7 @@ async fn io_thread(mut stream: tokio::net::TcpStream, io_evs: mpsc::Sender<IoEve
         };
 
         const HEADER_LEN: usize = core::mem::size_of::<EventHeader>();
-        let mut readable = (&mut stream).take(HEADER_LEN as _);
+        let mut readable = (&mut stream).take((HEADER_LEN - header_offset) as _);
 
         tokio::select!{
             biased;
@@ -1675,7 +1676,7 @@ async fn io_thread(mut stream: tokio::net::TcpStream, io_evs: mpsc::Sender<IoEve
                     }
                 }
             }
-            res = readable.read(&mut header_buf) => {
+            res = readable.read(&mut header_buf[header_offset..]) => {
                 let len = match res {
                     Ok(len) => len,
                     Err(e) => {
@@ -1691,9 +1692,11 @@ async fn io_thread(mut stream: tokio::net::TcpStream, io_evs: mpsc::Sender<IoEve
                 if len == 0 {
                     io_evs.send(IoEvent::Shutdown).await.unwrap();
                     return;
-                } else if len < HEADER_LEN {
-                    panic!("too small");
+                } else if header_offset + len < HEADER_LEN {
+                    header_offset += len;
+                    continue;
                 }
+                header_offset = 0;
 
                 let (header_bytes, extra_bytes) = header_buf.split_at(HEADER_LEN);
 
@@ -1762,11 +1765,6 @@ async fn io_thread(mut stream: tokio::net::TcpStream, io_evs: mpsc::Sender<IoEve
                             stream.flush().await.unwrap();
                         }
 
-                        if let Some(IoStream { writer_fb, .. }) = created_streams.get_mut(&header.stream_id) {
-                            writer_fb.notify_one();
-                        } else {
-                            panic!("could not find stream for {}", header.stream_id);
-                        }
                     }
                     EventType::PingResp => io_evs.send(IoEvent::Pong).await.unwrap(),
                     EventType::WriteReq => {
@@ -1805,7 +1803,14 @@ async fn io_thread(mut stream: tokio::net::TcpStream, io_evs: mpsc::Sender<IoEve
                             panic!("could not find stream for {}", header.stream_id);
                         }
                     }
-                    EventType::WriteResp | EventType::ReadResp | EventType::ReadRelResp | EventType::ReadRelSpecResp | EventType::CloseStreamResp => continue,
+                    EventType::WriteResp => {
+                        if let Some(IoStream { writer_fb, .. }) = created_streams.get_mut(&header.stream_id) {
+                            writer_fb.notify_one();
+                        } else {
+                            panic!("could not find stream for {}", header.stream_id);
+                        }
+                    }
+                    EventType::ReadResp | EventType::ReadRelResp | EventType::ReadRelSpecResp | EventType::CloseStreamResp => continue,
 
                     t => println!("skipping event ty {t:?}"),
                 }
@@ -1933,12 +1938,12 @@ mod pipeline {
         io_info: HashMap<(Option<&'a str>, &'a str), InternalIoInfo<'a>>
     }
 
-    trait Deserializer {
+    pub trait Deserializer {
         type Error;
         fn deserialize<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T, Self::Error>;
     }
 
-    trait Deserialize<D: Deserializer>: Sized + serde::de::DeserializeOwned {
+    pub(crate) trait Deserialize<D: Deserializer>: Sized + serde::de::DeserializeOwned {
         fn deserialize(bytes: &[u8]) -> Result<Self, D::Error> {
             D::deserialize(bytes)
         }
@@ -1999,7 +2004,7 @@ mod pipeline {
         }
     }
 
-    trait Serializer {
+    pub trait Serializer {
         type Error;
         fn serialize<T: serde::Serialize, W: std::io::Write>(t: &T, writer: &mut W) -> Result<usize, Self::Error>;
     }
@@ -2033,10 +2038,17 @@ mod pipeline {
         inner: Output<PipelineEvent, RnopDeserializer>,
     }
 
+    impl <D: Deserializer> IoDeserializeable<D> for PipelineEvent {
+        type Metadata = PipelineEvent;
+        type Output = ();
+    }
+
     #[derive(serde::Deserialize)]
     struct PipelineEvent {
 
     }
+
+    impl NotAny for PipelineEvent {}
 
     impl StaticIoDesc for PipelineEvent {
         //TODO
@@ -2047,7 +2059,7 @@ mod pipeline {
     impl StaticIoDesc for PipelineEventOutput {
         const NAME: &str = PipelineEvent::NAME;
         const NODE_TYPE: NodeType = PipelineEvent::NODE_TYPE;
-        const GROUP: Option<&str> = PipelineEvent::GROUP;
+        const GROUP: Option<&str> = <PipelineEvent as StaticIoDesc>::GROUP;
     }
 
     impl IoRegister for PipelineEventOutput {
@@ -2150,9 +2162,7 @@ mod pipeline {
     trait IoDesc {
         fn name(this: &Self::InfoStorage) -> &str;
 
-        fn group(this: &Self::InfoStorage) -> Option<&str> {
-            None
-        }
+        const GROUP: Option<&str> = None;
 
         fn node_type(this: &Self::InfoStorage) -> NodeType;
 
@@ -2170,9 +2180,7 @@ mod pipeline {
             T::NAME
         }
 
-        fn group(_: &Self::InfoStorage) -> Option<&str> {
-            T::GROUP
-        }
+        const GROUP: Option<&str> = T::GROUP;
 
         fn node_type(_: &Self::InfoStorage) -> NodeType {
             T::NODE_TYPE
@@ -2217,7 +2225,7 @@ mod pipeline {
     #[derive(serde::Serialize, serde::Deserialize, Debug)]
     pub struct XLinkOutProperties {
         pub max_fps_limit: f32,
-        pub stream_name: String,
+        pub(crate) stream_name: String,
         pub metadata_only: bool,
         pub packet_size: i32,
         pub bytes_per_second: i32,
@@ -2242,7 +2250,7 @@ mod pipeline {
     }
 
     #[derive(Clone, Copy)]
-    pub struct OutputRef<'a, P: Node, T: IoDesc + Deserialize<D>, D: Deserializer> {
+    pub struct OutputRef<'a, P: Node, T: IoDesc + IoDeserializeable<D>, D: Deserializer> {
         node: &'a NodeT<P>,
         output: &'a Output<T, D>,
     }
@@ -2275,18 +2283,49 @@ mod pipeline {
 
     struct DynamicDesc {
         name: String,
-        group: String,
         node_type: NodeType,
     }
 
-    pub struct Output<T: IoDesc, D: Deserializer> where T: Deserialize<D> {
+    pub struct Output<T: IoDesc + IoDeserializeable<D>, D: Deserializer> {
         output: T::InfoStorage,
         conf: IoDescConf,
         _pd: core::marker::PhantomData<D>,
     }
 
+    #[repr(transparent)]
+    pub struct Dynamic<T> {
+        _inner: core::marker::PhantomData<T>,
+    }
+
+    impl <D: Deserializer, T: IoDeserializeable<D>> IoDeserializeable<D> for Dynamic<T> {
+        type Metadata = T::Metadata;
+        type Output = T::Output;
+    }
+
+    #[derive(Default)]
+    struct DynamicStorage {
+        name: String,
+    }
+
+    trait DynamicGroup {
+        const GROUP: Option<&str>;
+    }
+
+    impl <T: StaticIoDesc + DynamicGroup> IoDesc for Dynamic<T> {
+        fn name(this: &Self::InfoStorage) -> &str {
+            this.name.as_str()
+        }
+
+        const GROUP: Option<&str> = <T as DynamicGroup>::GROUP;
+        fn node_type(_: &Self::InfoStorage) -> NodeType {
+            T::NODE_TYPE
+        }
+
+        type InfoStorage = DynamicStorage;
+    }
+
     // these need to move to sealed types if actually using them
-    impl <T: IoDesc, D: Deserializer> core::default::Default for Output<T, D> where T: Deserialize<D> {
+    impl <T: IoDesc + IoDeserializeable<D>, D: Deserializer> core::default::Default for Output<T, D> {
         fn default() -> Self {
             Self {
                 output: Default::default(),
@@ -2299,7 +2338,7 @@ mod pipeline {
     trait CompatibleLink {}
     trait CompatibleSerialization {}
 
-    impl <T: StaticIoDesc> CompatibleLink for (T, T) {}
+    impl <T: NotAny> CompatibleLink for (T, T) {}
 
     pub struct Any<I> {
         inner: I,
@@ -2318,22 +2357,136 @@ mod pipeline {
     impl CompatibleSerialization for (MsgpackSerializer, MsgpackDeserializer) {}
     impl CompatibleSerialization for (ProtobufSerializer, ProtobufDeserializer) {}
 
+    impl <T: NotAny, I> CompatibleLink for (Any<I>, T) {}
+    impl <T: NotAny, I> CompatibleLink for (T, Any<I>) {}
 
-    impl <T: StaticIoDesc, I> CompatibleLink for (Any<I>, T) {}
-    impl <T: StaticIoDesc, I> CompatibleLink for (T, Any<I>) {}
-
-    pub struct OutputQueue<T> {
-        name: crate::StreamName,
-        _pd: core::marker::PhantomData<T>,
+    pub mod queue_state {
+        pub struct Pending(pub(crate) crate::StreamName);
+        pub struct Ready(pub(crate) crate::ConnectionStream);
     }
 
-    impl <T: StaticIoDesc, D: Deserializer> StaticIoDesc for Output<T, D> where T: Deserialize<D> {
+    pub struct OutputQueue<T, D, S> {
+        pub(crate) state: S,
+        pub(crate) _pd: core::marker::PhantomData<(T, D)>,
+    }
+
+    // used as a marker for link support
+    trait NotAny {}
+
+    pub trait IoDeserializeable<D: Deserializer> {
+        type Metadata: Deserialize<D> + NotAny;
+        type Output;
+    }
+
+    pub trait IoSerializeable<S: Serializer> {
+        type Metadata: Serialize<S> + NotAny;
+        type Output;
+    }
+
+    pub trait Simplify<D: Deserializer, T: IoDeserializeable<D>> {
+        type Out;
+        fn simplify(this: <T as IoDeserializeable<D>>::Metadata, bytes: Vec<u8>) -> Self::Out;
+    }
+
+    impl <T: IoDeserializeable<D>, D: Deserializer> Simplify<D, T> for (<T as IoDeserializeable<D>>::Metadata, ()) {
+        type Out = <T as IoDeserializeable<D>>::Metadata;
+
+        fn simplify(this: <T as IoDeserializeable<D>>::Metadata, _: Vec<u8>) -> Self::Out {
+            this
+        }
+    }
+
+    impl <T: IoDeserializeable<D>, D: Deserializer> Simplify<D, T> for (<T as IoDeserializeable<D>>::Metadata, Vec<u8>) {
+        type Out = (<T as IoDeserializeable<D>>::Metadata, Vec<u8>);
+
+        fn simplify(this: <T as IoDeserializeable<D>>::Metadata, bytes: Vec<u8>) -> Self::Out {
+            (this, bytes)
+        }
+    }
+
+    impl <T: IoDeserializeable<D>, D: Deserializer> OutputQueue<T, D, queue_state::Ready> {
+        /// this is a whole lot of trait magic to be able to either output `Metadata` or `(Metadata, Vec<u8>)` depending on the type
+        pub async fn read(&mut self) -> Result<<(T::Metadata, T::Output) as Simplify<D, T>>::Out, D::Error> where (<T as IoDeserializeable<D>>::Metadata, <T as IoDeserializeable<D>>::Output): Simplify<D, T> {
+            let ReadRaw { metadata, buffer } = self.read_raw().await.unwrap();
+
+            let metadata = D::deserialize::<T::Metadata>(&metadata)?;
+
+            let out = <(<T as IoDeserializeable<D>>::Metadata, <T as IoDeserializeable<D>>::Output)>::simplify(metadata, buffer);
+
+            Ok(out)
+        }
+    }
+
+    #[derive(Debug)]
+    pub struct ReadRaw {
+        pub metadata: Vec<u8>,
+        pub buffer: Vec<u8>,
+    }
+
+    impl <T, D> OutputQueue<T, D, queue_state::Ready> {
+        pub async fn read_raw(&mut self) -> Option<ReadRaw> {
+            let mut bytes = self.state.0.read().await;
+
+            struct Header {
+                metadata_size: u32,
+                ty: u32,
+            }
+
+            impl Header {
+                const SIZE: usize = 16 + 4 + 4;
+                const END_OF_PACKET_MARKER: [u8; 16] = [0xAB, 0xCD, 0xEF, 0x01, 0x23, 0x45, 0x67, 0x89, 0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC, 0xDE, 0xF0];
+
+                fn parse(bytes: &[u8]) -> Result<Self, ()> {
+                    if bytes.len() < 24 {
+                        return Err(());
+                    }
+
+                    let chunk = bytes.last_chunk::<16>().unwrap();
+                    if *chunk != Self::END_OF_PACKET_MARKER {
+                        return Err(())
+                    }
+
+                    let take_u32 = |bytes: &[u8]| -> u32 {
+                        u32::from_le_bytes(*bytes.last_chunk::<4>().unwrap())
+                    };
+
+                    let packet_len = bytes.len() - Self::END_OF_PACKET_MARKER.len();
+                    let metadata_size = take_u32(&bytes[..packet_len]);
+                    let ty = take_u32(&bytes[..packet_len - 4]);
+
+                    Ok(Self {
+                        metadata_size,
+                        ty,
+                    })
+                }
+            }
+
+            let header = Header::parse(&bytes).ok()?;
+
+            bytes.truncate(bytes.len() - Header::SIZE);
+
+            let metadata_size = header.metadata_size as usize;
+
+            if bytes.len() < metadata_size {
+                return None;
+            }
+
+            let metadata = bytes.split_off(bytes.len() - metadata_size);
+
+            Some(ReadRaw {
+                metadata,
+                buffer: bytes,
+            })
+        }
+    }
+
+    impl <T: StaticIoDesc + IoDeserializeable<D>, D: Deserializer> StaticIoDesc for Output<T, D> {
         const NAME: &str = T::NAME;
         const GROUP: Option<&str> = T::GROUP;
         const NODE_TYPE: NodeType = T::NODE_TYPE;
     }
 
-    impl <T: StaticIoDesc, S: Serializer> StaticIoDesc for Input<T, S> where T: Serialize<S> {
+    impl <T: StaticIoDesc + IoSerializeable<S>, S: Serializer> StaticIoDesc for Input<T, S> where T: Serialize<S> {
         const NAME: &str = T::NAME;
         const GROUP: Option<&str> = T::GROUP;
         const NODE_TYPE: NodeType = T::NODE_TYPE;
@@ -2344,9 +2497,7 @@ mod pipeline {
             T::name(this)
         }
 
-        fn group(this: &Self::InfoStorage) -> Option<&str> {
-            T::group(this)
-        }
+        const GROUP: Option<&str> = T::GROUP;
 
         fn node_type(this: &Self::InfoStorage) -> NodeType {
             T::node_type(this)
@@ -2380,7 +2531,690 @@ mod pipeline {
         const NAME: &str = "SystemLogger";
     }
 
-    impl <T: IoDesc, D: Deserializer> Outputs for Output<T, D> where T:Deserialize<D> {
+    #[derive(serde::Serialize, serde::Deserialize, Debug)]
+    pub struct ImuProperties {
+        imu_sensors: Vec<ImuSensorConfig>,
+        batch_report_threshold: i32,
+        max_batch_reports: i32,
+        enable_firmware_update: Option<bool>,
+    }
+
+    impl ImuProperties {
+        pub fn enable_sensor(&mut self, sensor: ImuSensorKind, rate: u32) {
+            self.imu_sensors.push(ImuSensorConfig {
+                sensor_id: sensor,
+                report_rate: rate,
+                ..Default::default()
+            })
+        }
+    }
+
+    impl core::default::Default for ImuProperties {
+        fn default() -> Self {
+            Self {
+                imu_sensors: vec![],
+                batch_report_threshold: 1,
+                max_batch_reports: 5,
+                enable_firmware_update: Some(false),
+            }
+        }
+    }
+
+    #[derive(serde::Serialize, serde::Deserialize, Debug)]
+    pub struct ImuSensorConfig {
+        sensitivity_enabled: bool,
+        sensitivity_relative: bool,
+        change_sensitivity: u16,
+        report_rate: u32,
+        sensor_id: ImuSensorKind,
+    }
+
+    impl core::default::Default for ImuSensorConfig {
+        fn default() -> Self {
+            Self {
+                sensitivity_enabled: false,
+                sensitivity_relative: false,
+                change_sensitivity: 0,
+                report_rate: 100,
+                sensor_id: ImuSensorKind::Accelerometer,
+            }
+        }
+    }
+
+    #[derive(serde_repr::Serialize_repr, serde_repr::Deserialize_repr, Debug)]
+    #[repr(i32)]
+    pub enum ImuSensorKind {
+        /// raw acceleration without preprocessing
+        AccelerometerRaw = 0x14,
+        /// acceleration including gravity
+        Accelerometer = 0x01,
+        /// acceleration without gravity
+        LinearAcceleration = 0x04,
+        Gravity = 0x06,
+        /// raw angular velocity without preprocessing
+        GyroscopeRaw = 0x15,
+        /// angular velocity
+        GyroscopeCalibrated = 0x02,
+        /// angular velocity without bias compensation
+        GyroscopeUncalibrated = 0x07,
+        MagnetometerRaw = 0x16,
+        MagnetometerCalibrated = 0x03,
+        MagnetometerUncalibrated = 0x0f,
+        RotationVector = 0x05,
+        GameRotationVector = 0x08,
+        GeomagneticRotationVector = 0x09,
+        ArvrStabilizedRotationVector = 0x28,
+        ArvrStabilizedGameRotationVector = 0x29,
+    }
+
+    pub struct Imu;
+
+    #[derive(serde::Serialize, Debug)]
+    #[repr(transparent)]
+    pub struct In<T>(T);
+
+    // TODO: impl inputs for In<..>
+    //impl 
+    impl <T: Inputs> Inputs for In<T> {
+        type Inputs<'a, N> = T::Inputs<'a, N> where Self: 'a, N: Node + 'a;
+        fn inputs<'a, N: Node>(&'a self, node: &'a NodeT<N>) -> Self::Inputs<'a, N> {
+            self.0.inputs(node)
+        }
+    }
+
+    impl <T: Outputs> Outputs for Out<T> {
+        type Outputs<'a, N> = T::Outputs<'a, N> where Self: 'a, N: Node + 'a;
+        fn outputs<'a, N: Node>(&'a self, node: &'a NodeT<N>) -> Self::Outputs<'a, N> {
+            self.0.outputs(node)
+        }
+    }
+
+    impl <D: Deserializer, T: IoDeserializeable<D>> IoDeserializeable<D> for Out<T> {
+        type Metadata = T::Metadata;
+        type Output = T::Output;
+    }
+
+    #[derive(serde::Deserialize, Debug)]
+    #[repr(transparent)]
+    pub struct Out<T>(T);
+
+    #[derive(serde::Deserialize, serde::Serialize, Debug)]
+    pub struct ImuData {
+        timestamp: Timestamp,
+        device_timestamp: Timestamp,
+        sequence: i32,
+        packets: Vec<ImuPacket>,
+    }
+
+    impl NotAny for ImuData {}
+
+    impl <D: Deserializer> IoDeserializeable<D> for ImuData {
+        type Metadata = Self;
+        type Output = ();
+    }
+
+    #[derive(serde::Deserialize, serde::Serialize, Debug)]
+    struct ImuPacket {
+        accelerometer: ImuAccelerometer,
+        gyroscope: ImuGyroscope,
+        magnetic_field: ImuMagneticField,
+        rotation_vector: ImuRotationVector,
+    }
+
+    #[derive(serde::Deserialize, serde::Serialize, Debug)]
+    struct ImuAccelerometer {
+        x: f32,
+        y: f32,
+        z: f32,
+        sequence: i32,
+        accuracy: ImuAccuracy,
+        timestamp: Timestamp,
+        device_timestamp: Timestamp,
+    }
+
+    #[derive(serde::Deserialize, serde::Serialize, Debug)]
+    struct ImuGyroscope {
+        x: f32,
+        y: f32,
+        z: f32,
+        sequence: i32,
+        accuracy: ImuAccuracy,
+        timestamp: Timestamp,
+        device_timestamp: Timestamp,
+    }
+
+    #[derive(serde::Deserialize, serde::Serialize, Debug)]
+    struct ImuMagneticField {
+        x: f32,
+        y: f32,
+        z: f32,
+        sequence: i32,
+        accuracy: ImuAccuracy,
+        timestamp: Timestamp,
+        device_timestamp: Timestamp,
+    }
+
+    #[derive(serde::Deserialize, serde::Serialize, Debug)]
+    struct ImuRotationVector {
+        i: f32,
+        j: f32,
+        k: f32,
+        real: f32,
+        rvec_accuracy: f32,
+        sequence: i32,
+        accuracy: ImuAccuracy,
+        timestamp: Timestamp,
+        device_timestamp: Timestamp,
+    }
+
+    #[derive(serde_repr::Serialize_repr, serde_repr::Deserialize_repr, Debug)]
+    #[repr(u8)]
+    enum ImuAccuracy {
+        Unreliable = 0,
+        Low = 1,
+        Medium = 2,
+        High = 3,
+    }
+
+    #[derive(serde::Deserialize, serde::Serialize, Debug, PartialEq)]
+    struct Timestamp {
+        sec: i64,
+        nsec: i64,
+    }
+
+    impl StaticIoDesc for In<ImuData> {
+        const NAME: &str = "mockIn";
+        const NODE_TYPE: NodeType = NodeType::SReceiver;
+    }
+
+    impl StaticIoDesc for Out<ImuData> {
+        const NAME: &str = "out";
+        const NODE_TYPE: NodeType = NodeType::MSender;
+    }
+
+    impl Node for Imu {
+        type Input = Input<In<ImuData>, RnopSerializer>;
+        type Output = Output<Out<ImuData>, RnopDeserializer>;
+        type Properties = ImuProperties;
+        const NAME: &str = "IMU";
+    }
+
+    pub struct Camera;
+
+    // TODO: this also has support for dynamic outputs,
+    // - create hashmap impl for (String, DynamicOutput/DynamicInput)
+    impl Node for Camera {
+        type Input = (Input<CameraInputControl, RnopSerializer>, Input<In<CameraFrame>, RnopSerializer>);
+        type Output = (Output<Out<CameraFrame>, RnopDeserializer>, Vec<Output<Dynamic<CameraFrame>, RnopDeserializer>>);
+        type Properties = CameraProperties;
+        const NAME: &str = "Camera";
+    }
+
+    impl NodeT<Camera> {
+        pub fn raw_camera_output(&self) -> OutputRef<'_, Camera, Out<CameraFrame>, RnopDeserializer> {
+            self.output().0
+        }
+
+        pub fn requested_camera_outputs(&self) -> impl Iterator<Item = OutputRef<'_, Camera, Dynamic<CameraFrame>, RnopDeserializer>> {
+            self.output().1
+        }
+
+        pub fn request_output(&mut self, capability: CameraCapability) -> usize {
+            let len = self.output.1.len();
+            let mut new_output = Output::<Dynamic<_>, _>::default();
+            new_output.output.name = format!("{len}");
+            self.output.1.push(new_output);
+            self.properties.output_requests.push(capability);
+            len
+        }
+    }
+
+    impl DynamicGroup for CameraFrame {
+        const GROUP: Option<&str> = Some("dynamicOutputs");
+    }
+
+    impl <T: IoDesc + IoDeserializeable<D>, D: Deserializer> Outputs for Vec<Output<T, D>> {
+        type Outputs<'a, N: Node + 'a> = OutputRefIter<'a, T, D, N> where Self: 'a;
+        fn outputs<'a, N: Node>(&'a self, node: &'a NodeT<N>) -> Self::Outputs<'a, N> {
+            OutputRefIter {
+                iter: self.as_slice().iter(),
+                node,
+            }
+        }
+    }
+
+    impl <T: IoRegister> IoRegister for Vec<T> {
+        fn register<'a, 'b>(&'a self, info: &mut IoInfo<'a, 'b>) {
+            for it in self.iter() {
+                it.register(info)
+            }
+        }
+    }
+
+    pub struct OutputRefIter<'a, T: IoDeserializeable<D> + IoDesc, D: Deserializer, N: Node> {
+        iter: std::slice::Iter<'a, Output<T, D>>,
+        node: &'a NodeT<N>,
+    }
+
+    impl <'a, T: IoDeserializeable<D> + IoDesc, D: Deserializer, N: Node> Iterator for OutputRefIter<'a, T, D, N> {
+        type Item = OutputRef<'a, N, T, D>;
+
+        fn next(&mut self) -> Option<Self::Item> {
+            let next = self.iter.next()?;
+            Some(next.outputs(self.node))
+        }
+    }
+
+    impl <D: Deserializer> IoDeserializeable<D> for CameraFrame {
+        type Metadata = Self;
+        type Output = Vec<u8>;
+    }
+
+    impl StaticIoDesc for In<CameraFrame> {
+        const NAME: &str = "mockIsp";
+        const NODE_TYPE: NodeType = NodeType::SReceiver;
+    }
+
+    impl StaticIoDesc for Out<CameraFrame> {
+        const NAME: &str = "raw";
+        const NODE_TYPE: NodeType = NodeType::MSender;
+    }
+
+    impl StaticIoDesc for CameraFrame {
+        // unimportant
+        const NAME: &str = "";
+        const NODE_TYPE: NodeType = NodeType::MSender;
+    }
+
+    #[derive(serde::Serialize, serde::Deserialize, Debug, Default, PartialEq)]
+    pub struct CameraInputControl {
+        cmd_mask: u64,
+        auto_focus_mode: AutoFocusMode,
+        lens_position: u8,
+        lens_position_raw: f32,
+        lens_pos_auto_infinity: u8,
+        lens_pos_auto_macro: u8,
+        exp_manual: ManualExposureParams,
+        ae_region: RegionParams,
+        af_region: RegionParams,
+        awb_mode: AutoWhiteBalanceMode,
+        scene_mode: SceneMode,
+        anti_banding_mode: AntiBandingMode,
+        pub(crate) ae_lock_mode: bool,
+        pub(crate) awb_lock_mode: bool,
+        capture_intent: CaptureIntent,
+        control_mode: ControlMode,
+        effect_mode: EffectMode,
+        frame_sync_mode: FrameSyncMode,
+        pub(crate) strobe_config: StrobeConfig,
+        strobe_timings: StrobeTimings,
+        ae_max_exposure_time_us: u32,
+        exp_compensation: i8,
+        brightness: i8,
+        contrast: i8,
+        saturation: i8,
+        sharpness: u8,
+        luma_denoise: u8,
+        chroma_denoise: u8,
+        wb_color_temp: u16,
+        low_power_frame_burst: u8,
+        low_power_frame_discard: u8,
+        pub(crate) enable_hdr: bool,
+        misc_controls: Vec<(String, String)>,
+    }
+
+    #[derive(serde_repr::Serialize_repr, serde_repr::Deserialize_repr, Debug, Default, PartialEq)]
+    #[repr(u8)]
+    enum AutoFocusMode {
+        Off = 0,
+        Auto = 1,
+        Macro = 2,
+        #[default]
+        ContinuousVideo = 3,
+        ContinuousPicture = 4,
+        Edof = 5,
+    }
+
+    #[derive(serde::Serialize, serde::Deserialize, Debug, Default, PartialEq)]
+    struct ManualExposureParams {
+        exposure_time_us: u32,
+        sensitivity_iso: u32,
+        frame_duration_us: u32,
+    }
+
+    #[derive(serde::Serialize, serde::Deserialize, Debug, Default, PartialEq)]
+    struct RegionParams {
+        x: u16,
+        y: u16,
+        width: u16,
+        height: u16,
+        priority: u16,
+    }
+
+    #[derive(serde_repr::Serialize_repr, serde_repr::Deserialize_repr, Debug, Default, PartialEq)]
+    #[repr(u8)]
+    enum AutoWhiteBalanceMode {
+        #[default]
+        Off = 0,
+        Auto = 1,
+        Incandescent = 2,
+        Flourescent = 3,
+        WarmFlourescent = 4,
+        Daylight = 5,
+        CloudyDaylight = 6,
+        Twilight = 7,
+        Shade = 8,
+    }
+
+    #[derive(serde_repr::Serialize_repr, serde_repr::Deserialize_repr, Debug, Default, PartialEq)]
+    #[repr(u8)]
+    enum SceneMode {
+        #[default]
+        Unsupported = 0,
+        FacePriority = 1,
+        Action = 2,
+        Portrait = 3,
+        Landscape = 4,
+        Night = 5,
+        NightPortrait = 6,
+        Theatre = 7,
+        Beach = 8,
+        Snow = 9,
+        Sunset = 10,
+        SteadyPhoto = 11,
+        Fireworks = 12,
+        Sports = 13,
+        Party = 14,
+        Candlelight = 15,
+        Barcode = 16,
+    }
+
+    #[derive(serde_repr::Serialize_repr, serde_repr::Deserialize_repr, Debug, Default, PartialEq)]
+    #[repr(u8)]
+    enum AntiBandingMode {
+        #[default]
+        Off = 0,
+        Mains50Hz = 1,
+        Mains60Hz = 2,
+        Auto = 3,
+    }
+
+    #[derive(serde_repr::Serialize_repr, serde_repr::Deserialize_repr, Debug, Default, PartialEq)]
+    #[repr(u8)]
+    enum CaptureIntent {
+        #[default]
+        Custom = 0,
+        Preview = 1,
+        StillCapture = 2,
+        VideoRecord = 3,
+        VideoSnapshot = 4,
+        ZeroShutterLag = 5,
+    }
+
+    #[derive(serde_repr::Serialize_repr, serde_repr::Deserialize_repr, Debug, Default, PartialEq)]
+    #[repr(u8)]
+    enum ControlMode {
+        #[default]
+        Off = 0,
+        Auto = 1,
+        UseSceneMode = 2,
+    }
+
+    #[derive(serde_repr::Serialize_repr, serde_repr::Deserialize_repr, Debug, Default, PartialEq)]
+    #[repr(u8)]
+    enum EffectMode {
+        #[default]
+        Off = 0,
+        Mono = 1,
+        Negative = 2,
+        Solarize = 3,
+        Sepia = 4,
+        Posterize = 5,
+        Whiteboard = 6,
+        Blackboard = 7,
+        Aqua = 8,
+    }
+
+    #[derive(serde_repr::Serialize_repr, serde_repr::Deserialize_repr, Debug, Default, PartialEq)]
+    #[repr(u8)]
+    enum FrameSyncMode {
+        #[default]
+        Off = 0,
+        Output = 1,
+        Input = 2,
+    }
+
+    #[derive(serde::Serialize, serde::Deserialize, Debug, Default, PartialEq)]
+    pub struct StrobeConfig {
+        pub(crate) enable: bool,
+        active_level: u8,
+        gpio_number: i8
+    }
+
+    #[derive(serde::Serialize, serde::Deserialize, Debug, Default, PartialEq)]
+    pub struct StrobeTimings {
+        exposure_begin_offset_us: i32,
+        exposure_end_offset_us: i32,
+        duration_us: u32,
+    }
+
+    impl StaticIoDesc for CameraInputControl {
+        const NAME: &str = "inputControl";
+        const NODE_TYPE: NodeType = NodeType::SReceiver;
+    }
+
+    #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
+    pub struct CameraFrame {
+        timestamp: Timestamp,
+        device_timestamp: Timestamp,
+        sequence: i32,
+        fb: CameraSpecs,
+        source_fb: CameraSpecs,
+        settings: CameraSettings,
+        category: u32,
+        instance: u32,
+        transformation: ImageTransformation,
+    }
+
+    impl NotAny for CameraFrame {}
+
+    #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
+    pub struct ImageTransformation {
+        transformation_mtx: [[f32; 3]; 3],
+        transformation_mtx_inv: [[f32; 3]; 3],
+        source_intrinsic_mtx: [[f32; 3]; 3],
+        source_intrinsic_mtx_inv: [[f32; 3]; 3],
+        distortion_model: crate::rpc::CameraModel,
+        distortion_coefficients: Vec<f32>,
+        src_width: u32,
+        src_height: u32,
+        width: u32,
+        height: u32,
+        src_crops: Vec<RotatedRect>,
+        /*
+        src_crop: RotatedRect,
+        dst_crop: RotatedRect,
+        crops_valid: bool,
+        */
+    }
+
+    #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
+    pub struct Vec2 {
+        x: f32,
+        y: f32,
+        normalized: bool,
+        has_normalized: bool,
+    }
+
+    #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
+    pub struct RotatedRect {
+        center: Vec2,
+        size: Vec2,
+        angle: f32,
+    }
+
+    #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
+    pub struct CameraSettings {
+        exposure_time_us: i32,
+        sensitivity_iso: i32,
+        lens_position: i32,
+        wb_color_temp: i32,
+        lens_position_raw: f32,
+    }
+
+    #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
+    pub struct CameraSpecs {
+        ty: FrameType,
+        width: u32,
+        height: u32,
+        stride: u32,
+        bytes_pp: u32,
+        // offsets into planes
+        p1_offset: u32,
+        p2_offset: u32,
+        p3_offset: u32,
+    }
+
+    #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
+    pub struct CameraProperties {
+        pub(crate) initial_control: CameraInputControl,
+        pub(crate) board_socket: crate::rpc::CameraBoardSocket,
+        pub(crate) sensor_type: crate::rpc::CameraSensorType,
+        camera_name: String,
+        image_orientation: crate::rpc::CameraImageOrientation,
+        resolution_width: i32,
+        resolution_height: i32,
+        mock_isp_width: i32,
+        mock_isp_height: i32,
+        mock_isp_fps: f32,
+        fps: f32,
+        isp_3a_fps: i32,
+        frames_pool_raw: i32,
+        pool_raw_max_size: i32,
+        frames_pool_isp: i32,
+        pool_isp_max_size: i32,
+        pool_video_frames: i32,
+        pool_preview_frames: i32,
+        pool_still_frames: i32,
+        pool_outputs_frames: Option<i32>,
+        pool_outputs_max_size: Option<i32>,
+        pub(crate) output_requests: Vec<CameraCapability>
+    }
+
+    #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
+    pub struct Capability<T> {
+        pub range: Option<CapabilityRange<T>>,
+    }
+
+    impl <T> Capability<T> {
+        pub fn new_none() -> Self {
+            Self {
+                range: None,
+            }
+        }
+
+        pub fn new_single(t: T) -> Self {
+            Self {
+                range: Some(CapabilityRange::Single(t))
+            }
+        }
+    }
+
+    #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
+    pub enum CapabilityRange<T> {
+        Single(T),
+        Pair(T, T),
+        Collection(Vec<T>),
+    }
+
+    #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
+    pub struct CameraCapability {
+        pub(crate) size: Capability<(u32, u32)>,
+        pub(crate) fps: Capability<f32>,
+        pub(crate) ty: Option<FrameType>,
+        pub(crate) resize_mode: FrameResize,
+        pub(crate) enable_undistortion: Option<bool>,
+        pub(crate) isp_output: bool,
+    }
+
+    #[derive(serde_repr::Serialize_repr, serde_repr::Deserialize_repr, Debug, PartialEq)]
+    #[repr(u8)]
+    pub enum FrameType {
+        Yuv422i = 0,
+        Yuv444p = 1,
+        Yuv420p = 2,
+        Yuv422p = 3,
+        Yuv400p = 4,
+        Rgba4444 = 5,
+        Rgb161616 = 6,
+        Rgb888p = 7,
+        Bgr888p = 8,
+        Rgb888i = 9,
+        Bgr888i = 10,
+        Lut2 = 11,
+        Lut4 = 12,
+        Lut16 = 13,
+        Raw16 = 14,
+        Raw14 = 15,
+        Raw12 = 16,
+        Raw10 = 17,
+        Raw8 = 18,
+        Pack10 = 19,
+        Pack12 = 20,
+        Yuv444i = 21,
+        Nv12 = 22,
+        Nv21 = 23,
+        Bitstream = 24,
+        Hdr = 25,
+        RgbF16F16F16p = 26,
+        BgrF16F16F16p = 27,
+        RgbF16F16F16i = 28,
+        BgrF16F16F16i = 29,
+        Gray8 = 30,
+        GrayF16 = 31,
+        Raw32 = 32,
+        None = 33,
+    }
+
+    #[derive(serde_repr::Serialize_repr, serde_repr::Deserialize_repr, Debug, PartialEq)]
+    #[repr(u8)]
+    pub enum FrameResize {
+        Crop = 0,
+        Stretch = 1,
+        Letterbox = 2,
+    }
+
+    impl core::default::Default for CameraProperties {
+        fn default() -> Self {
+            Self {
+                output_requests: vec![],
+                initial_control: Default::default(),
+                board_socket: Default::default(),
+                sensor_type: Default::default(),
+                camera_name: Default::default(),
+                image_orientation: Default::default(),
+
+                resolution_width: -1,
+                resolution_height: -1,
+                mock_isp_width: -1,
+                mock_isp_height: -1,
+                mock_isp_fps: -1.,
+                fps: -1.,
+                isp_3a_fps: 0,
+                frames_pool_raw: 3,
+                pool_raw_max_size: 1024 * 1024 * 10,
+                frames_pool_isp: 3,
+                pool_isp_max_size: 1024 * 1024 * 10,
+                pool_video_frames: 4,
+                pool_preview_frames: 4,
+                pool_still_frames: 4,
+                pool_outputs_frames: None,
+                pool_outputs_max_size: None,
+            }
+        }
+    }
+
+    impl <T: IoDesc + IoDeserializeable<D>, D: Deserializer> Outputs for Output<T, D> {
         type Outputs<'a, N: Node + 'a> = OutputRef<'a, N, T, D> where Self: 'a;
         fn outputs<'a, N: Node>(&'a self, node: &'a NodeT<N>) -> Self::Outputs<'a, N> {
             OutputRef {
@@ -2442,7 +3276,7 @@ mod pipeline {
             }
         }
 
-        pub fn link<I: Serialize<S> + IoDesc, S: Serializer, O: Deserialize<D> + IoDesc, D: Deserializer, N1: Node, N2: Node>(&mut self, output: OutputRef<'a, N1, O, D>, input: InputRef<'a, N2, I, S>) where (I, O): CompatibleLink, (S, D): CompatibleSerialization {
+        pub fn link<I: Serialize<S> + IoDesc, S: Serializer, O: IoDeserializeable<D> + IoDesc, D: Deserializer, N1: Node, N2: Node>(&mut self, output: OutputRef<'a, N1, O, D>, input: InputRef<'a, N2, I, S>) where (I, O::Metadata): CompatibleLink, (S, D): CompatibleSerialization {
             let connection = NodeConnection {
                 input_id: input.node.id,
                 input_name: input.input.name(),
@@ -2461,7 +3295,7 @@ mod pipeline {
             register_node(node, &mut self.nodes, &mut self.current_io_id)
         }
 
-        pub fn create_output_queue<O: Deserialize<D> + IoDesc, D: Deserializer, N1: Node>(&mut self, output: OutputRef<'a, N1, O, D>, xlink: &'a mut NodeT<XLinkOut>)  -> OutputQueue<D> where (Any<XLI>, O): CompatibleLink, (AnySerializer, D): CompatibleSerialization 
+        pub fn create_output_queue<O: IoDeserializeable<D> + IoDesc, D: Deserializer, N1: Node>(&mut self, output: OutputRef<'a, N1, O, D>, xlink: &'a mut NodeT<XLinkOut>)  -> OutputQueue<O::Metadata, D, queue_state::Pending> where (Any<XLI>, O::Metadata): CompatibleLink, (AnySerializer, D): CompatibleSerialization 
 {
             let id = self.current_xlink_out_id; 
             self.current_xlink_out_id += 1;
@@ -2475,7 +3309,7 @@ mod pipeline {
             self.link(output, xlink.input());
 
             OutputQueue {
-                name: stream_name,
+                state: queue_state::Pending(stream_name),
                 _pd: core::marker::PhantomData,
             }
         }
@@ -2556,24 +3390,24 @@ mod pipeline {
 
     impl <T: Serialize<S>, S: Serializer> IoRegister for Input<T, S> where T: IoDesc {
         fn register<'a, 'b>(&'a self, info: &mut IoInfo<'a, 'b>) {
-            info.push(T::group(&self.input), T::name(&self.input), T::node_type(&self.input), &self.conf)
+            info.push(T::GROUP, T::name(&self.input), T::node_type(&self.input), &self.conf)
         }
     }
 
-    impl <T: Deserialize<D>, D: Deserializer> IoRegister for Output<T, D> where T: IoDesc {
+    impl <T: IoDeserializeable<D>, D: Deserializer> IoRegister for Output<T, D> where T: IoDesc {
         fn register<'a, 'b>(&'a self, info: &mut IoInfo<'a, 'b>) {
 
-            info.push(T::group(&self.output), T::name(&self.output), T::node_type(&self.output), &self.conf)
+            info.push(T::GROUP, T::name(&self.output), T::node_type(&self.output), &self.conf)
         }
     }
 
-    impl <T: Deserialize<D> + IoDesc, D: Deserializer> Output<T, D> {
+    impl <T: IoDeserializeable<D> + IoDesc, D: Deserializer> Output<T, D> {
         pub fn name(&self) -> &str {
             T::name(&self.output)
         }
 
         pub fn group(&self) -> Option<&str> {
-            T::group(&self.output)
+            T::GROUP
         }
 
         pub fn node_type(&self) -> NodeType {
@@ -2587,7 +3421,7 @@ mod pipeline {
         }
 
         pub fn group(&self) -> Option<&str> {
-            T::group(&self.input)
+            T::GROUP
         }
 
         pub fn node_type(&self) -> NodeType {
@@ -2631,6 +3465,14 @@ mod pipeline {
         pub fn output(&self) -> <P::Output as Outputs>::Outputs<'_, P> {
             self.output.outputs(self)
         }
+
+        pub fn properties(&self) -> &P::Properties {
+            &self.properties
+        }
+
+        pub fn properties_mut(&mut self) -> &mut P::Properties {
+            &mut self.properties
+        }
     }
 
     // encoded structs
@@ -2648,11 +3490,15 @@ mod pipeline {
         chip_temperature: ChipTemperature,
     }
 
+    impl NotAny for SystemInfo {}
+
+    impl <D: Deserializer> IoDeserializeable<D> for SystemInfo {
+        type Metadata = Self;
+        type Output = ();
+    }
+
     #[test]
     fn pipeline_link() {
-        // NOTE: the stream name that shows up in output queues is dependent on what is passed
-        // through the streamname field in pipeline_properties
-
         let mut pipe = Pipeline::new();
         let logger = pipe.create_node::<SystemLogger>();
         let out = pipe.create_node::<XLinkOut>();
@@ -2674,15 +3520,33 @@ mod pipeline {
         const DEVICE_ID: &str = "device_id";
 
         let schema = pipe.build(DEVICE_ID);
-        panic!("{schema:?}");
     }
 
+    #[test]
+    fn pipeline_schema_dynamic() {
+        let mut pipe = Pipeline::new();
+        let mut camera = pipe.create_node::<Camera>();
+        let mut out = pipe.create_node::<XLinkOut>();
+
+        let id = camera.request_output(CameraCapability {
+            size: Capability::new_single((640, 480)),
+            fps: Capability::new_none(),
+            ty: None,
+            enable_undistortion: None,
+            isp_output: true,
+            resize_mode: FrameResize::Crop,
+        });
+
+        let output = camera.requested_camera_outputs().next().unwrap();
+
+        pipe.create_output_queue(output, &mut out);
+
+        assert_eq!(pipe.connections.len(), 1);
+        assert_eq!(pipe.nodes.len(), 2);
+    }
 
     #[test]
     fn pipeline_queue() {
-        // NOTE: the stream name that shows up in output queues is dependent on what is passed
-        // through the streamname field in pipeline_properties
-
         let mut pipe = Pipeline::new();
         let logger = pipe.create_node::<SystemLogger>();
         let mut out = pipe.create_node::<XLinkOut>();
@@ -2723,6 +3587,82 @@ mod pipeline {
             RnopSerializer::serialize(&properties, &mut w).unwrap();
             assert_eq!(w, original);
         }
+        // imu
+        {
+            let original = vec![185,4,186,2,185,5,0,0,0,129,224,1,20,185,5,0,0,0,129,144,1,21,1,10,0];
+            let old = rnop::Value::parse(&original).unwrap();
+
+            let mut props = crate::pipeline::ImuProperties::default();
+
+            props.enable_sensor(crate::pipeline::ImuSensorKind::Accelerometer, 480);
+            props.enable_sensor(crate::pipeline::ImuSensorKind::GyroscopeCalibrated, 400);
+
+            let v = rnop::to_value(&props).unwrap();
+
+            //panic!("{old:?}\n{v:?}");
+
+            //let old = rnop::to_value(&original);
+            //panic!("{old:?}");
+            //let old = RnopDeserializer::deserialize::<ImuProperties>(&original).unwrap();
+            //panic!("{old:?}");
+        }
+        // camera
+        {
+            let original = vec![185,22,185,33,0,3,0,136,0,0,0,0,0,0,185,3,0,0,0,185,5,0,0,0,0,0,185,5,0,0,0,0,0,0,0,0,0,0,0,0,0,0,185,3,0,0,0,185,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,186,0,0,255,189,0,255,255,255,255,255,136,0,0,128,191,136,0,0,128,191,0,3,134,0,0,160,0,3,134,0,0,160,0,4,4,4,190,190,186,1,185,6,185,1,184,0,186,2,129,128,7,129,176,4,185,1,190,190,0,190,0];
+
+
+            let mut def = CameraProperties::default();
+
+            def.initial_control.ae_lock_mode = true;
+            def.initial_control.awb_lock_mode = true;
+            def.initial_control.strobe_config.enable = true;
+            def.initial_control.enable_hdr = true;
+            def.board_socket = crate::rpc::CameraBoardSocket::A;
+
+
+            def.output_requests.push(CameraCapability {
+                size: Capability::new_single((1920, 1200)),
+                fps: Capability::new_none(),
+                ty: None,
+                enable_undistortion: None,
+                isp_output: true,
+                resize_mode: FrameResize::Crop,
+            });
+            /*
+            let mut w = vec![];
+            RnopSerializer::serialize(&def, &mut w).unwrap();
+            */
+
+            //assert_eq!(original, w);
+
+            // TODO:: compare the ser from the default properties to what was given
+            // - might be an issue with not providing an ouptut_request
+
+
+            let o1 = vec![185,6,185,1,184,0,186,2,129,128,7,129,176,4,185,1,190,190,0,190,0];
+            let o2 = RnopDeserializer::deserialize::<CameraCapability>(&o1).unwrap();
+
+            let old = rnop::Value::parse(&original).unwrap();
+            //panic!("{old:?}");
+            
+            //let props = CameraProperties
+            let old = RnopDeserializer::deserialize::<CameraProperties>(&original).unwrap();
+
+            assert_eq!(def, old);
+
+            panic!("camera props: {old:?}");
+        }
+    }
+
+    #[test]
+    fn imu_data_decode() {
+        let data = vec![185, 4, 185, 2, 10, 134, 88, 195, 149, 33, 185, 2, 10, 134, 88, 195, 149, 33, 0, 186, 1, 185, 4, 185, 7, 136, 0, 128, 139, 63, 136, 0, 48, 29, 65, 136, 0, 0, 64, 189, 133, 28, 5, 2, 185, 2, 10, 134, 88, 195, 149, 33, 185, 2, 10, 134, 88, 195, 149, 33, 185, 7, 136, 0, 0, 0, 0, 136, 0, 0, 0, 0, 136, 0, 0, 0, 0, 133, 181, 7, 3, 185, 2, 10, 134, 208, 254, 115, 33, 185, 2, 10, 134, 208, 254, 115, 33, 185, 7, 136, 0, 0, 0, 0, 136, 0, 0, 0, 0, 136, 0, 0, 0, 0, 0, 0, 185, 2, 0, 0, 185, 2, 0, 0, 185, 9, 136, 0, 0, 0, 0, 136, 0, 0, 0, 0, 136, 0, 0, 0, 0, 136, 0, 0, 0, 0, 136, 0, 0, 0, 0, 0, 0, 185, 2, 0, 0, 185, 2, 0, 0, 19, 0, 0, 0, 161, 0, 0, 0, 171, 205, 239, 1, 35, 69, 103, 137, 18, 52, 86, 120, 154, 188, 222, 240];
+
+
+        let v = <ImuData as Deserialize<RnopDeserializer>>::deserialize(&data).unwrap();
+        //panic!("{v:?}");
+        //let v = rnop::Value::parse(&data).unwrap();
+        //panic!("{v:?}");
     }
 }
 
@@ -3051,9 +3991,10 @@ mod rpc {
         }
     }
 
-    #[derive(serde_repr::Deserialize_repr, serde_repr::Serialize_repr, Debug, Hash, PartialEq, Eq)]
+    #[derive(serde_repr::Deserialize_repr, serde_repr::Serialize_repr, Debug, Hash, PartialEq, Eq, Default)]
     #[repr(i32)]
     pub enum CameraBoardSocket {
+        #[default]
         Auto = -1,
         A = 0,
         B = 1,
@@ -3097,9 +4038,10 @@ mod rpc {
         calibration_resolution: Option<CameraSensorConfig>,
     }
 
-    #[derive(serde_repr::Deserialize_repr, Debug)]
+    #[derive(serde_repr::Deserialize_repr, serde_repr::Serialize_repr, Debug, Default, PartialEq)]
     #[repr(i32)]
     pub enum CameraSensorType {
+        #[default]
         Auto = -1,
         Color = 0,
         Mono = 1,
@@ -3131,9 +4073,10 @@ mod rpc {
         has_normalized: bool,
     }
 
-    #[derive(serde_repr::Deserialize_repr, Debug)]
+    #[derive(serde_repr::Deserialize_repr, serde_repr::Serialize_repr, Debug, Default, PartialEq)]
     #[repr(i32)]
     pub enum CameraImageOrientation {
+        #[default]
         Auto = -1,
         Normal = 0,
         HorizontalMirror = 1,
@@ -3266,7 +4209,7 @@ mod rpc {
         ty: CameraModel,
     }
 
-    #[derive(serde_repr::Deserialize_repr, serde_repr::Serialize_repr, Debug)]
+    #[derive(serde_repr::Deserialize_repr, serde_repr::Serialize_repr, Debug, PartialEq)]
     #[repr(i8)]
     pub enum CameraModel {
         Perspective = 0,
