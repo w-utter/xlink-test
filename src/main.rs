@@ -227,8 +227,6 @@ async fn main() {
         let connection_itfs = rpc.connection_interfaces().await.unwrap();
         println!("itfs: {connection_itfs:?}");
 
-        let features = rpc.connected_camera_features().await.unwrap();
-        println!("features: {features:?}");
 
         let pairs = rpc.stereo_pairs().await.unwrap();
         println!("pairs: {pairs:?}");
@@ -302,115 +300,10 @@ async fn main() {
         println!("calibration2: {calibration2:?}");
         */
 
-        // TODO: need to figure out this thing is made.
-        //
+        let features = rpc.connected_camera_features().await.unwrap();
+        println!("features: {features:?}");
 
         use crate::rpc::{PipelineSchema, NodeConnectionSchema, NodeObjInfo, NodeIoInfo, GlobalProperties, NodeType, LogLevel};
-
-        /*
-        let schema = PipelineSchema {
-            bridges: vec![],
-            connections: vec![
-                NodeConnectionSchema {
-                    output_id: 0,
-                    output: "out".into(),
-                    output_group: "".into(),
-                    input_id: 1,
-                    input: "in".into(),
-                    input_group: "".into(),
-                },
-            ],
-            global_properties: GlobalProperties {
-                calibration: None,
-                camera_socket_tuning_blob_size: vec![],
-                camera_socket_tuning_blob_uri: vec![],
-                camera_tuning_blob_size: None,
-                camera_tuning_blob_uri: "".into(),
-                eeprom_id: Some(0),
-                leon_css_frequency_hz: 700000000.,
-                leon_mss_frequency_hz: 700000000.,
-                pipeline_name: None,
-                pipeline_version: None,
-                sipp_buffer_size: GlobalProperties::SIPP_BUFFER_DEFAULT_SIZE,
-                sipp_dma_buffer_size: GlobalProperties::SIPP_DMA_BUFFER_DEFAULT_SIZE,
-                xlink_chunk_size: -1,
-            },
-            nodes: vec![
-                (1, NodeObjInfo {
-                    alias: "".into(),
-                    device_id: "19443010A1A1872D00".into(),
-                    device_node: true,
-                    id: 1,
-                    io_info: vec![
-                        /*
-                         * NOTE: these are only used for debugging
-                         * TODO: maybe a create_node_with_debug() which extends the outputs and
-                         *
-                         * make it so that it keeps the same inputs 
-                         *
-                         * wraps a Debugging<Node> thing and mimicks all other properties to be
-                         * able to optionally add this
-                         *
-                        (("".into(), "pipelineEventOutput".into()), NodeIoInfo {
-                            blocking: false, 
-                            group: "".into(),
-                            id: 3,
-                            name: "pipelineEventOutput".into(),
-                            queue_size: 8,
-                            ty: NodeType::MSender,
-                            wait_for_message: false,
-                        }), 
-                        */
-                        (("".into(), "in".into()), NodeIoInfo {
-                            blocking: true,
-                            group: "".into(),
-                            id: 1,
-                            name: "in".into(),
-                            queue_size: 3,
-                            ty: NodeType::SReceiver,
-                            wait_for_message: false,
-                        }),
-                    ],
-                    log_level: LogLevel::Trace,
-                    name: "XLinkOut".into(),
-                    parent_id: -1,
-                    properties: vec![185, 5, 136, 0, 0, 128, 191, 189, 9, 95, 95, 120, 95, 48, 95, 111, 117, 116, 0, 255, 255],
-                }),
-                (0, NodeObjInfo {
-                    alias: "".into(),
-                    device_id: "19443010A1A1872D00".into(),
-                    device_node: true,
-                    id: 0,
-                    io_info: vec![
-                        (("".into(), "out".into()), NodeIoInfo {
-                            blocking: false,
-                            group: "".into(),
-                            id: 0,
-                            name: "out".into(),
-                            queue_size: 8,
-                            ty: NodeType::MSender,
-                            wait_for_message: false,
-                        }),
-                        /*
-                        (("".into(), "pipelineEventOutput".into()), NodeIoInfo {
-                            blocking: false,
-                            group: "".into(),
-                            id: 0,
-                            name: "pipelineEventOutput".into(),
-                            queue_size: 8,
-                            ty: NodeType::MSender,
-                            wait_for_message: false,
-                        }),
-                        */
-                    ],
-                    log_level: LogLevel::Trace,
-                    name: "SystemLogger".into(),
-                    parent_id: -1,
-                    properties: vec![185, 1, 136, 0, 0, 128, 63],
-                })
-            ]
-        };
-        */
 
         const DEVICE_ID: &str = "19443010A1A1872D00";
 
@@ -471,7 +364,83 @@ async fn main() {
             (pipe.build(DEVICE_ID), xlink_out1, xlink_out2)
         }
 
-        let (schema, out1, out2) = camera_pipeline_dynamic();
+        fn stereo_pipeline() -> (rpc::PipelineSchema, pipeline::OutputQueue<pipeline::CameraFrame, pipeline::RnopDeserializer, pipeline::queue_state::Pending>) {
+            let mut pipe = pipeline::Pipeline::new();
+            let mut camera_left = pipe.create_node::<pipeline::Camera>();
+            let cam_l = camera_left.properties_mut();
+            {
+                cam_l.initial_control.af_region.x = 4909;
+                cam_l.initial_control.af_region.priority = 4909;
+
+                cam_l.initial_control.ae_lock_mode = true;
+                cam_l.initial_control.awb_lock_mode = true;
+
+                cam_l.initial_control.strobe_config.enable = true;
+                cam_l.board_socket = crate::rpc::CameraBoardSocket::B;
+            }
+
+            camera_left.request_output(pipeline::CameraCapability {
+                size: pipeline::Capability::new_single((1920, 1200)),
+                fps: pipeline::Capability::new_none(),
+                ty: None,
+                enable_undistortion: None,
+                isp_output: false,
+                resize_mode: pipeline::FrameResize::Crop,
+            });
+
+            let cam_left = camera_left.requested_camera_outputs().next().unwrap();
+
+            let mut camera_right = pipe.create_node::<pipeline::Camera>();
+            let cam_r = camera_right.properties_mut();
+            {
+                cam_r.initial_control.ae_region.x = 3856;
+                cam_r.initial_control.ae_region.y = 32228;
+                cam_r.initial_control.ae_region.width = 23382;
+                cam_r.initial_control.ae_region.height = 0;
+                cam_r.initial_control.ae_region.priority = 3;
+
+                cam_r.initial_control.af_region.width = 28518;
+                cam_r.initial_control.af_region.height = 118;
+
+                cam_r.initial_control.ae_lock_mode = true;
+                cam_r.initial_control.awb_lock_mode = true;
+
+                cam_r.initial_control.strobe_config.enable = true;
+                cam_r.initial_control.contrast = -127;
+                cam_r.initial_control.saturation = 2;
+                cam_r.initial_control.low_power_frame_burst = 80;
+                cam_r.initial_control.low_power_frame_discard = 84;
+                cam_r.initial_control.enable_hdr = true;
+
+                cam_r.board_socket = crate::rpc::CameraBoardSocket::C;
+            }
+
+            camera_right.request_output(pipeline::CameraCapability {
+                size: pipeline::Capability::new_single((1920, 1200)),
+                fps: pipeline::Capability::new_none(),
+                ty: None,
+                enable_undistortion: None,
+                isp_output: true,
+                resize_mode: pipeline::FrameResize::Crop,
+            });
+
+            let cam_right = camera_right.requested_camera_outputs().next().unwrap();
+
+
+            let mut stereo = pipe.create_node::<pipeline::StereoDepth>();
+
+            pipe.link(cam_left, stereo.input().left);
+            pipe.link(cam_right, stereo.input().right);
+
+            let mut out = pipe.create_node::<pipeline::XLinkOut>();
+
+            let xlink_out = pipe.create_output_queue(stereo.output().disparity, &mut out);
+
+            (pipe.build(DEVICE_ID), xlink_out)
+        }
+
+        let (schema, out) = stereo_pipeline();
+        //let (schema, out1, out2) = camera_pipeline_dynamic();
 
 
         //connection.create_stream("__x_0_out", bootloader::MAX_PACKET_SIZE).await.unwrap();
@@ -488,18 +457,27 @@ async fn main() {
         let ret = rpc.start_pipeline().await;
         println!("{ret:?}");
 
+        /*
         let mut queue1 = connection.wait_for_output_queue(out1).await;
         let mut queue2 = connection.wait_for_output_queue(out2).await;
+        */
+
+        let mut queue = connection.wait_for_output_queue(out).await;
+
 
         loop {
+            let r = queue.read().await;
+            println!("{:?}", r.unwrap().0);
+            /*
             tokio::select! {
                 r = queue1.read() => {
-                    println!("received custom: {:?}", r.unwrap().0);
+                    //println!("received custom: {:?}", r.unwrap().0);
                 }
                 r = queue2.read() => {
-                    println!("received raw: {:?}", r.unwrap().0);
+                    //println!("received raw: {:?}", r.unwrap().0);
                 }
             }
+            */
         }
     }
 }
@@ -2207,7 +2185,7 @@ mod pipeline {
         fn outputs<'a, T: Node>(&'a self, node: &'a NodeT<T>) -> Self::Outputs<'a, T> {}
     }
 
-    impl <T: IoDesc, S: Serializer> Inputs for Input<T, S> where T: Serialize<S> {
+    impl <T: IoDesc + IoSerializeable<S>, S: Serializer> Inputs for Input<T, S> {
         type Inputs<'a, N: Node + 'a> = InputRef<'a, N, T, S> where Self: 'a;
         fn inputs<'a, N: Node>(&'a self, node: &'a NodeT<N>) -> Self::Inputs<'a, N> {
             InputRef {
@@ -2244,7 +2222,7 @@ mod pipeline {
     }
 
     #[derive(Clone, Copy)]
-    pub struct InputRef<'a, P: Node, T: IoDesc + Serialize<S>, S: Serializer> {
+    pub struct InputRef<'a, P: Node, T: IoDesc + IoSerializeable<S>, S: Serializer> {
         node: &'a NodeT<P>,
         input: &'a Input<T, S>,
     }
@@ -2255,13 +2233,13 @@ mod pipeline {
         output: &'a Output<T, D>,
     }
 
-    pub struct Input<T: IoDesc, S: Serializer> where T: Serialize<S> {
+    pub struct Input<T: IoDesc + IoSerializeable<S>, S: Serializer> {
         input: T::InfoStorage,
         conf: IoDescConf,
         _pd: core::marker::PhantomData<S>,
     }
 
-    impl <T: IoDesc, S: Serializer> core::default::Default for Input<T, S> where T: Serialize<S> {
+    impl <T: IoDesc + IoSerializeable<S>, S: Serializer> core::default::Default for Input<T, S> {
         fn default() -> Self {
             Self {
                 input: Default::default(),
@@ -2269,6 +2247,11 @@ mod pipeline {
                 _pd: core::marker::PhantomData,
             }
         }
+    }
+
+    impl <S: Serializer, I> IoSerializeable<S> for Any<I> {
+        type Metadata = ();
+        type Output = Vec<u8>;
     }
 
     impl Node for XLinkOut {
@@ -2338,7 +2321,11 @@ mod pipeline {
     trait CompatibleLink {}
     trait CompatibleSerialization {}
 
+    // the unit type here is repr of Any
     impl <T: NotAny> CompatibleLink for (T, T) {}
+    impl <T: NotAny> CompatibleLink for ((), T) {}
+    impl <T: NotAny> CompatibleLink for (T, ()) {}
+    impl CompatibleLink for ((), ()) {}
 
     pub struct Any<I> {
         inner: I,
@@ -2357,9 +2344,6 @@ mod pipeline {
     impl CompatibleSerialization for (MsgpackSerializer, MsgpackDeserializer) {}
     impl CompatibleSerialization for (ProtobufSerializer, ProtobufDeserializer) {}
 
-    impl <T: NotAny, I> CompatibleLink for (Any<I>, T) {}
-    impl <T: NotAny, I> CompatibleLink for (T, Any<I>) {}
-
     pub mod queue_state {
         pub struct Pending(pub(crate) crate::StreamName);
         pub struct Ready(pub(crate) crate::ConnectionStream);
@@ -2374,12 +2358,12 @@ mod pipeline {
     trait NotAny {}
 
     pub trait IoDeserializeable<D: Deserializer> {
-        type Metadata: Deserialize<D> + NotAny;
+        type Metadata: Deserialize<D>;
         type Output;
     }
 
     pub trait IoSerializeable<S: Serializer> {
-        type Metadata: Serialize<S> + NotAny;
+        type Metadata: Serialize<S>;
         type Output;
     }
 
@@ -2613,8 +2597,11 @@ mod pipeline {
     #[repr(transparent)]
     pub struct In<T>(T);
 
-    // TODO: impl inputs for In<..>
-    //impl 
+    impl <S: Serializer, T: IoSerializeable<S>> IoSerializeable<S> for In<T> {
+        type Metadata = T::Metadata;
+        type Output = T::Output;
+    }
+
     impl <T: Inputs> Inputs for In<T> {
         type Inputs<'a, N> = T::Inputs<'a, N> where Self: 'a, N: Node + 'a;
         fn inputs<'a, N: Node>(&'a self, node: &'a NodeT<N>) -> Self::Inputs<'a, N> {
@@ -2634,6 +2621,7 @@ mod pipeline {
         type Output = T::Output;
     }
 
+
     #[derive(serde::Deserialize, Debug)]
     #[repr(transparent)]
     pub struct Out<T>(T);
@@ -2648,10 +2636,7 @@ mod pipeline {
 
     impl NotAny for ImuData {}
 
-    impl <D: Deserializer> IoDeserializeable<D> for ImuData {
-        type Metadata = Self;
-        type Output = ();
-    }
+    impl MetadataOnly for ImuData {}
 
     #[derive(serde::Deserialize, serde::Serialize, Debug)]
     struct ImuPacket {
@@ -2810,6 +2795,11 @@ mod pipeline {
         type Output = Vec<u8>;
     }
 
+    impl <S: Serializer> IoSerializeable<S> for CameraFrame {
+        type Metadata = Self;
+        type Output = Vec<u8>;
+    }
+
     impl StaticIoDesc for In<CameraFrame> {
         const NAME: &str = "mockIsp";
         const NODE_TYPE: NodeType = NodeType::SReceiver;
@@ -2829,39 +2819,41 @@ mod pipeline {
     #[derive(serde::Serialize, serde::Deserialize, Debug, Default, PartialEq)]
     pub struct CameraInputControl {
         cmd_mask: u64,
-        auto_focus_mode: AutoFocusMode,
+        pub auto_focus_mode: AutoFocusMode,
         lens_position: u8,
         lens_position_raw: f32,
         lens_pos_auto_infinity: u8,
         lens_pos_auto_macro: u8,
-        exp_manual: ManualExposureParams,
-        ae_region: RegionParams,
-        af_region: RegionParams,
-        awb_mode: AutoWhiteBalanceMode,
-        scene_mode: SceneMode,
-        anti_banding_mode: AntiBandingMode,
-        pub(crate) ae_lock_mode: bool,
-        pub(crate) awb_lock_mode: bool,
-        capture_intent: CaptureIntent,
-        control_mode: ControlMode,
-        effect_mode: EffectMode,
-        frame_sync_mode: FrameSyncMode,
-        pub(crate) strobe_config: StrobeConfig,
-        strobe_timings: StrobeTimings,
-        ae_max_exposure_time_us: u32,
-        exp_compensation: i8,
-        brightness: i8,
-        contrast: i8,
-        saturation: i8,
-        sharpness: u8,
-        luma_denoise: u8,
-        chroma_denoise: u8,
-        wb_color_temp: u16,
-        low_power_frame_burst: u8,
-        low_power_frame_discard: u8,
-        pub(crate) enable_hdr: bool,
+        pub exp_manual: ManualExposureParams,
+        pub ae_region: RegionParams,
+        pub af_region: RegionParams,
+        pub awb_mode: AutoWhiteBalanceMode,
+        pub scene_mode: SceneMode,
+        pub anti_banding_mode: AntiBandingMode,
+        pub ae_lock_mode: bool,
+        pub awb_lock_mode: bool,
+        pub capture_intent: CaptureIntent,
+        pub control_mode: ControlMode,
+        pub effect_mode: EffectMode,
+        pub frame_sync_mode: FrameSyncMode,
+        pub strobe_config: StrobeConfig,
+        pub strobe_timings: StrobeTimings,
+        pub ae_max_exposure_time_us: u32,
+        pub exp_compensation: i8,
+        pub brightness: i8,
+        pub contrast: i8,
+        pub saturation: i8,
+        pub sharpness: u8,
+        pub luma_denoise: u8,
+        pub chroma_denoise: u8,
+        pub wb_color_temp: u16,
+        pub low_power_frame_burst: u8,
+        pub low_power_frame_discard: u8,
+        pub enable_hdr: bool,
         misc_controls: Vec<(String, String)>,
     }
+
+    impl NotAny for CameraInputControl {}
 
     #[derive(serde_repr::Serialize_repr, serde_repr::Deserialize_repr, Debug, Default, PartialEq)]
     #[repr(u8)]
@@ -2876,24 +2868,24 @@ mod pipeline {
     }
 
     #[derive(serde::Serialize, serde::Deserialize, Debug, Default, PartialEq)]
-    struct ManualExposureParams {
+    pub struct ManualExposureParams {
         exposure_time_us: u32,
         sensitivity_iso: u32,
         frame_duration_us: u32,
     }
 
     #[derive(serde::Serialize, serde::Deserialize, Debug, Default, PartialEq)]
-    struct RegionParams {
-        x: u16,
-        y: u16,
-        width: u16,
-        height: u16,
-        priority: u16,
+    pub struct RegionParams {
+        pub x: u16,
+        pub y: u16,
+        pub width: u16,
+        pub height: u16,
+        pub priority: u16,
     }
 
     #[derive(serde_repr::Serialize_repr, serde_repr::Deserialize_repr, Debug, Default, PartialEq)]
     #[repr(u8)]
-    enum AutoWhiteBalanceMode {
+    pub enum AutoWhiteBalanceMode {
         #[default]
         Off = 0,
         Auto = 1,
@@ -3002,6 +2994,20 @@ mod pipeline {
         const NAME: &str = "inputControl";
         const NODE_TYPE: NodeType = NodeType::SReceiver;
     }
+
+    trait MetadataOnly { }
+
+    impl <S: Serializer, T: MetadataOnly + NotAny + Serialize<S>> IoSerializeable<S> for T {
+        type Metadata = Self;
+        type Output = ();
+    }
+
+    impl <D: Deserializer, T: MetadataOnly + NotAny + Deserialize<D>> IoDeserializeable<D> for T {
+        type Metadata = Self;
+        type Output = ();
+    }
+
+    impl MetadataOnly for CameraInputControl {}
 
     #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
     pub struct CameraFrame {
@@ -3276,7 +3282,7 @@ mod pipeline {
             }
         }
 
-        pub fn link<I: Serialize<S> + IoDesc, S: Serializer, O: IoDeserializeable<D> + IoDesc, D: Deserializer, N1: Node, N2: Node>(&mut self, output: OutputRef<'a, N1, O, D>, input: InputRef<'a, N2, I, S>) where (I, O::Metadata): CompatibleLink, (S, D): CompatibleSerialization {
+        pub fn link<I: IoSerializeable<S> + IoDesc, S: Serializer, O: IoDeserializeable<D> + IoDesc, D: Deserializer, N1: Node, N2: Node>(&mut self, output: OutputRef<'a, N1, O, D>, input: InputRef<'a, N2, I, S>) where (I::Metadata, O::Metadata): CompatibleLink, (S, D): CompatibleSerialization {
             let connection = NodeConnection {
                 input_id: input.node.id,
                 input_name: input.input.name(),
@@ -3295,7 +3301,7 @@ mod pipeline {
             register_node(node, &mut self.nodes, &mut self.current_io_id)
         }
 
-        pub fn create_output_queue<O: IoDeserializeable<D> + IoDesc, D: Deserializer, N1: Node>(&mut self, output: OutputRef<'a, N1, O, D>, xlink: &'a mut NodeT<XLinkOut>)  -> OutputQueue<O::Metadata, D, queue_state::Pending> where (Any<XLI>, O::Metadata): CompatibleLink, (AnySerializer, D): CompatibleSerialization 
+        pub fn create_output_queue<O: IoDeserializeable<D> + IoDesc, D: Deserializer, N1: Node>(&mut self, output: OutputRef<'a, N1, O, D>, xlink: &'a mut NodeT<XLinkOut>)  -> OutputQueue<O::Metadata, D, queue_state::Pending> where ((), O::Metadata): CompatibleLink, (AnySerializer, D): CompatibleSerialization 
 {
             let id = self.current_xlink_out_id; 
             self.current_xlink_out_id += 1;
@@ -3388,7 +3394,7 @@ mod pipeline {
 
     //logger.output().link(out.input());
 
-    impl <T: Serialize<S>, S: Serializer> IoRegister for Input<T, S> where T: IoDesc {
+    impl <T: IoSerializeable<S>, S: Serializer> IoRegister for Input<T, S> where T: IoDesc {
         fn register<'a, 'b>(&'a self, info: &mut IoInfo<'a, 'b>) {
             info.push(T::GROUP, T::name(&self.input), T::node_type(&self.input), &self.conf)
         }
@@ -3415,7 +3421,7 @@ mod pipeline {
         }
     }
 
-    impl <T: Serialize<S> + IoDesc, S: Serializer> Input<T, S> {
+    impl <T: IoSerializeable<S> + IoDesc, S: Serializer> Input<T, S> {
         pub fn name(&self) -> &str {
             T::name(&self.input)
         }
@@ -3492,9 +3498,842 @@ mod pipeline {
 
     impl NotAny for SystemInfo {}
 
-    impl <D: Deserializer> IoDeserializeable<D> for SystemInfo {
-        type Metadata = Self;
-        type Output = ();
+    impl MetadataOnly for SystemInfo {}
+
+    pub struct StereoDepth;
+
+    impl Node for StereoDepth {
+        type Input = StereoDepthInputs;
+        type Output = StereoDepthOutputs;
+        type Properties = StereoDepthProperties;
+        const NAME: &str = "StereoDepth";
+    }
+
+    #[derive(serde::Serialize)]
+    #[repr(transparent)]
+    pub struct Numbered<T, const N: usize> {
+        inner: T,
+    }
+
+    impl <T: Inputs, const C: usize> Inputs for Numbered<T, C> {
+        type Inputs<'a, N> = T::Inputs<'a, N> where Self: 'a, N: Node + 'a;
+
+        fn inputs<'a, N: Node>(&'a self, node: &'a NodeT<N>) -> Self::Inputs<'a, N> {
+            self.inner.inputs(node)
+        }
+    }
+
+    impl <D: Deserializer, T: IoDeserializeable<D>, const N: usize> IoDeserializeable<D> for Numbered<T, N> {
+        type Metadata = T::Metadata;
+        type Output = T::Output;
+    }
+
+    impl <S: Serializer, T: IoSerializeable<S>, const N: usize> IoSerializeable<S> for Numbered<T, N> {
+        type Metadata = T::Metadata;
+        type Output = T::Output;
+    }
+
+
+    impl <T: Outputs, const C: usize> Outputs for Numbered<T, C> {
+        type Outputs<'a, N> = T::Outputs<'a, N> where Self: 'a, N: Node + 'a;
+
+        fn outputs<'a, N: Node>(&'a self, node: &'a NodeT<N>) -> Self::Outputs<'a, N> {
+            self.inner.outputs(node)
+        }
+    }
+
+    #[derive(Default)]
+    pub struct StereoDepthInputs {
+        input_config: Input<In<StereoDepthConfig>, RnopSerializer>,
+        input_align_to: Input<Numbered<CameraFrame, 0>, RnopSerializer>,
+        left: Input<Numbered<CameraFrame, 1>, RnopSerializer>,
+        right: Input<Numbered<CameraFrame, 2>, RnopSerializer>,
+    }
+
+    impl IoRegister for StereoDepthInputs {
+        fn register<'a, 'b>(&'a self, info: &mut IoInfo<'a, 'b>) {
+            let Self {
+                input_config,
+                input_align_to,
+                left,
+                right,
+            } = self;
+
+            input_config.register(info);
+            input_align_to.register(info);
+            left.register(info);
+            right.register(info);
+        }
+    }
+
+    pub struct StereoDepthInputRef<'a, N: Node> {
+        pub input_config: InputRef<'a, N, In<StereoDepthConfig>, RnopSerializer>,
+        pub input_align_to: InputRef<'a, N, Numbered<CameraFrame, 0>, RnopSerializer>,
+        pub left: InputRef<'a, N, Numbered<CameraFrame, 1>, RnopSerializer>,
+        pub right: InputRef<'a, N, Numbered<CameraFrame, 2>, RnopSerializer>,
+    }
+
+    impl Inputs for StereoDepthInputs {
+        type Inputs<'a, N> = StereoDepthInputRef<'a, N> where Self: 'a, N: Node + 'a;
+
+        fn inputs<'a, N: Node>(&'a self, node: &'a NodeT<N>) -> Self::Inputs<'a, N> {
+            let Self {
+                input_config,
+                input_align_to,
+                left,
+                right,
+            } = self;
+
+            StereoDepthInputRef {
+                input_config: input_config.inputs(node),
+                input_align_to: input_align_to.inputs(node),
+                left: left.inputs(node),
+                right: right.inputs(node),
+            }
+        }
+    }
+
+    impl StaticIoDesc for Numbered<CameraFrame, 0> {
+        const NAME: &str = "inputAlignTo";
+        const NODE_TYPE: NodeType = NodeType::SReceiver;
+    }
+
+    impl StaticIoDesc for Numbered<CameraFrame, 1> {
+        const NAME: &str = "left";
+        const NODE_TYPE: NodeType = NodeType::SReceiver;
+    }
+
+    impl StaticIoDesc for Numbered<CameraFrame, 2> {
+        const NAME: &str = "right";
+        const NODE_TYPE: NodeType = NodeType::SReceiver;
+    }
+
+    #[derive(Default)]
+    pub struct StereoDepthOutputs {
+        depth: Output<Numbered<CameraFrame, 3>, RnopDeserializer>,
+        disparity: Output<Numbered<CameraFrame, 4>, RnopDeserializer>,
+
+        snyced_left: Output<Numbered<CameraFrame, 5>, RnopDeserializer>,
+        synced_right: Output<Numbered<CameraFrame, 6>, RnopDeserializer>,
+
+        rectified_left: Output<Numbered<CameraFrame, 7>, RnopDeserializer>,
+        rectified_right: Output<Numbered<CameraFrame, 8>, RnopDeserializer>,
+
+        config: Output<Out<StereoDepthConfig>, RnopDeserializer>,
+
+        debug_lr_check_i1: Output<Numbered<CameraFrame, 9>, RnopDeserializer>,
+        debug_lr_check_i2: Output<Numbered<CameraFrame, 10>, RnopDeserializer>,
+        debug_ext_lr_check_i1: Output<Numbered<CameraFrame, 11>, RnopDeserializer>,
+        debug_ext_lr_check_i2: Output<Numbered<CameraFrame, 12>, RnopDeserializer>,
+        debug_cost_dump: Output<Numbered<CameraFrame, 13>, RnopDeserializer>,
+
+        confidence_map: Output<Numbered<CameraFrame, 14>, RnopDeserializer>,
+    }
+
+    impl IoRegister for StereoDepthOutputs {
+        fn register<'a, 'b>(&'a self, info: &mut IoInfo<'a, 'b>) {
+            let Self {
+                depth,
+                disparity,
+                snyced_left,
+                synced_right,
+                rectified_left,
+                rectified_right,
+                config,
+                debug_lr_check_i1,
+                debug_lr_check_i2,
+                debug_ext_lr_check_i1,
+                debug_ext_lr_check_i2,
+                debug_cost_dump,
+                confidence_map,
+            } = self;
+
+            depth.register(info);
+            disparity.register(info);
+            snyced_left.register(info);
+            synced_right.register(info);
+            rectified_left.register(info);
+            rectified_right.register(info);
+            config.register(info);
+            debug_lr_check_i1.register(info);
+            debug_lr_check_i2.register(info);
+            debug_ext_lr_check_i1.register(info);
+            debug_ext_lr_check_i2.register(info);
+            debug_cost_dump.register(info);
+            confidence_map.register(info);
+        }
+    }
+
+    pub struct StereoDepthOutputRef<'a, N: Node> {
+        pub depth: OutputRef<'a, N, Numbered<CameraFrame, 3>, RnopDeserializer>,
+        pub disparity: OutputRef<'a, N, Numbered<CameraFrame, 4>, RnopDeserializer>,
+
+        pub snyced_left: OutputRef<'a, N, Numbered<CameraFrame, 5>, RnopDeserializer>,
+        pub synced_right: OutputRef<'a, N, Numbered<CameraFrame, 6>, RnopDeserializer>,
+
+        pub rectified_left: OutputRef<'a, N, Numbered<CameraFrame, 7>, RnopDeserializer>,
+        pub rectified_right: OutputRef<'a, N, Numbered<CameraFrame, 8>, RnopDeserializer>,
+
+        pub config: OutputRef<'a, N, Out<StereoDepthConfig>, RnopDeserializer>,
+
+        pub debug_lr_check_i1: OutputRef<'a, N, Numbered<CameraFrame, 9>, RnopDeserializer>,
+        pub debug_lr_check_i2: OutputRef<'a, N, Numbered<CameraFrame, 10>, RnopDeserializer>,
+        pub debug_ext_lr_check_i1: OutputRef<'a, N, Numbered<CameraFrame, 11>, RnopDeserializer>,
+        pub debug_ext_lr_check_i2: OutputRef<'a, N, Numbered<CameraFrame, 12>, RnopDeserializer>,
+        pub debug_cost_dump: OutputRef<'a, N, Numbered<CameraFrame, 13>, RnopDeserializer>,
+
+        pub confidence_map: OutputRef<'a, N, Numbered<CameraFrame, 14>, RnopDeserializer>,
+    }
+
+    impl Outputs for StereoDepthOutputs {
+        type Outputs<'a, N> = StereoDepthOutputRef<'a, N> where Self: 'a, N: Node + 'a;
+
+        fn outputs<'a, N: Node>(&'a self, node: &'a NodeT<N>) -> Self::Outputs<'a, N> {
+            let Self {
+                depth,
+                disparity,
+                snyced_left,
+                synced_right,
+                rectified_left,
+                rectified_right,
+                config,
+                debug_lr_check_i1,
+                debug_lr_check_i2,
+                debug_ext_lr_check_i1,
+                debug_ext_lr_check_i2,
+                debug_cost_dump,
+                confidence_map,
+            } = self;
+
+            StereoDepthOutputRef {
+                depth: depth.outputs(node),
+                disparity: disparity.outputs(node),
+                snyced_left: snyced_left.outputs(node),
+                synced_right: synced_right.outputs(node),
+                rectified_left: rectified_left.outputs(node),
+                rectified_right: rectified_right.outputs(node),
+                config: config.outputs(node),
+                debug_lr_check_i1: debug_lr_check_i1.outputs(node),
+                debug_lr_check_i2: debug_lr_check_i2.outputs(node),
+                debug_ext_lr_check_i1: debug_ext_lr_check_i1.outputs(node),
+                debug_ext_lr_check_i2: debug_ext_lr_check_i2.outputs(node),
+                debug_cost_dump: debug_cost_dump.outputs(node),
+                confidence_map: confidence_map.outputs(node),
+            }
+        }
+    }
+
+    impl StaticIoDesc for Numbered<CameraFrame, 3> {
+        const NODE_TYPE: NodeType = NodeType::MSender;
+        const NAME: &str = "depth";
+    }
+
+    impl StaticIoDesc for Numbered<CameraFrame, 4> {
+        const NODE_TYPE: NodeType = NodeType::MSender;
+        const NAME: &str = "disparity";
+    }
+
+    impl StaticIoDesc for Numbered<CameraFrame, 5> {
+        const NODE_TYPE: NodeType = NodeType::MSender;
+        const NAME: &str = "syncedLeft";
+    }
+
+    impl StaticIoDesc for Numbered<CameraFrame, 6> {
+        const NODE_TYPE: NodeType = NodeType::MSender;
+        const NAME: &str = "syncedRight";
+    }
+
+    impl StaticIoDesc for Numbered<CameraFrame, 7> {
+        const NODE_TYPE: NodeType = NodeType::MSender;
+        const NAME: &str = "rectifiedLeft";
+    }
+
+    impl StaticIoDesc for Numbered<CameraFrame, 8> {
+        const NODE_TYPE: NodeType = NodeType::MSender;
+        const NAME: &str = "rectifiedRight";
+    }
+
+    impl StaticIoDesc for Numbered<CameraFrame, 9> {
+        const NODE_TYPE: NodeType = NodeType::MSender;
+        const NAME: &str = "debugDispLrCheckIt1";
+    }
+
+    impl StaticIoDesc for Numbered<CameraFrame, 10> {
+        const NODE_TYPE: NodeType = NodeType::MSender;
+        const NAME: &str = "debugDispLrCheckIt2";
+    }
+
+    impl StaticIoDesc for Numbered<CameraFrame, 11> {
+        const NODE_TYPE: NodeType = NodeType::MSender;
+        const NAME: &str = "debugExtDispLrCheckIt1";
+    }
+
+    impl StaticIoDesc for Numbered<CameraFrame, 12> {
+        const NODE_TYPE: NodeType = NodeType::MSender;
+        const NAME: &str = "debugExtDispLrCheckIt2";
+    }
+
+    impl StaticIoDesc for Numbered<CameraFrame, 13> {
+        const NODE_TYPE: NodeType = NodeType::MSender;
+        const NAME: &str = "debugDispCostDump";
+    }
+
+    impl StaticIoDesc for Numbered<CameraFrame, 14> {
+        const NODE_TYPE: NodeType = NodeType::MSender;
+        const NAME: &str = "confidenceMap";
+    }
+
+    #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
+    pub struct StereoDepthProperties {
+        pub initial_config: StereoDepthConfig,
+        pub depth_align_camera: crate::rpc::CameraBoardSocket,
+        pub enable_rectification: bool,
+        pub rectify_edge_fill_color: i32,
+        pub width: Option<i32>,
+        pub height: Option<i32>,
+        pub out_width: Option<i32>,
+        pub out_height: Option<i32>,
+        pub keep_aspect_ratio: bool,
+        pub mesh: RectificationMesh,
+        pub enable_runtime_stereo_mode_switch: bool,
+        pub frame_pool: i32,
+        pub post_processing_shaves: i32,
+        pub post_processing_memory_slices: i32,
+        pub focal_length_from_calibration: bool,
+        pub use_homography_rectification: Option<bool>,
+        pub enable_frame_sync: bool,
+        pub baseline: Option<f32>,
+        pub focal_length: Option<f32>,
+        pub disparity_to_depth_use_spec_translation: Option<bool>,
+        pub rectification_use_spec_translation: Option<bool>,
+        pub depth_alignment_use_spec_translation: Option<bool>,
+        pub alpha_scaling: Option<f32>,
+    }
+
+    impl core::default::Default for StereoDepthProperties {
+        fn default() -> Self {
+            Self {
+                initial_config: Default::default(),
+                depth_align_camera: Default::default(),
+                enable_rectification: true,
+                rectify_edge_fill_color: 0,
+                width: None,
+                height: None,
+                out_width: None,
+                out_height: None,
+                keep_aspect_ratio: true,
+                mesh: Default::default(),
+                enable_runtime_stereo_mode_switch: false,
+                frame_pool: 3,
+                post_processing_shaves: -1,
+                post_processing_memory_slices: -1,
+                focal_length_from_calibration: true,
+                use_homography_rectification: None,
+                enable_frame_sync: true,
+                baseline: None,
+                focal_length: None,
+                disparity_to_depth_use_spec_translation: None,
+                rectification_use_spec_translation: None,
+                depth_alignment_use_spec_translation: None,
+                alpha_scaling: None,
+            }
+        }
+    }
+
+    #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
+    pub struct RectificationMesh {
+        left_mesh_uri: String,
+        right_mesh_uri: String,
+        mesh_size: Option<u32>,
+        step_width: u16,
+        step_height: u16,
+    }
+
+    impl core::default::Default for RectificationMesh {
+        fn default() -> Self {
+            Self {
+                left_mesh_uri: Default::default(),
+                right_mesh_uri: Default::default(),
+                mesh_size: None,
+                step_width: 16,
+                step_height: 16,
+            }
+        }
+    }
+    
+    #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
+    pub struct StereoDepthConfig {
+        pub algorithm_control: AlgorithmControl,
+        pub post_processing: PostProcessing,
+        pub census_transorm: CensusTransform,
+        pub cost_matching: CostMatching,
+        pub cost_aggregation: CostAggregation,
+        pub confidence_metrics: ConfidenceMetrics,
+        pub filters_backend: crate::rpc::ProcessorType,
+    }
+
+    impl MetadataOnly for StereoDepthConfig {}
+
+    impl StaticIoDesc for In<StereoDepthConfig> {
+        const NAME: &str = "inputConfig";
+        const NODE_TYPE: NodeType = NodeType::SReceiver;
+    }
+
+    impl StaticIoDesc for Out<StereoDepthConfig> {
+        const NAME: &str = "outConfig";
+        const NODE_TYPE: NodeType = NodeType::MSender;
+    }
+
+    impl NotAny for StereoDepthConfig {}
+
+    impl core::default::Default for StereoDepthConfig {
+        fn default() -> Self {
+            Self {
+                algorithm_control: Default::default(),
+                post_processing: Default::default(),
+                census_transorm: Default::default(),
+                cost_matching: Default::default(),
+                cost_aggregation: Default::default(),
+                confidence_metrics: Default::default(),
+                filters_backend: crate::rpc::ProcessorType::Cpu,
+            }
+        }
+    }
+
+    #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
+    struct ConfidenceMetrics {
+        occlusion_confidence_weight: u8,
+        motion_vector_confidence_weight: u8,
+        motion_vector_confidence_threshold: u8,
+        flatness_confidence_weight: u8,
+        flatness_confidence_threshold: u8,
+        flatness_override: bool,
+    }
+
+    impl core::default::Default for ConfidenceMetrics {
+        fn default() -> Self {
+            Self {
+                occlusion_confidence_weight: 20,
+                motion_vector_confidence_weight: 4,
+                motion_vector_confidence_threshold: 1,
+                flatness_confidence_weight: 8,
+                flatness_confidence_threshold: 2,
+                flatness_override: false,
+            }
+        }
+    }
+    
+    #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
+    struct CostAggregation {
+        division_factor: u8,
+        horizontal_penalty_cost_p1: u16,
+        horizontal_penalty_cost_p2: u16,
+        vertical_penalty_cost_p1: u16,
+        vertical_penalty_cost_p2: u16,
+        p1_config: P1Config,
+        p2_config: P2Config,
+    }
+
+    impl core::default::Default for CostAggregation {
+        fn default() -> Self {
+            Self {
+                division_factor: 1,
+                horizontal_penalty_cost_p1: 250,
+                horizontal_penalty_cost_p2: 500,
+                vertical_penalty_cost_p1: 250,
+                vertical_penalty_cost_p2: 500,
+                p1_config: Default::default(),
+                p2_config: Default::default(),
+            }
+        }
+    }
+
+    #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
+    struct P1Config {
+        enable_adaptive: bool,
+        default_value: u8,
+        edge_value: u8,
+        smooth_value: u8,
+        edge_threshold: u8,
+        smooth_threshold: u8,
+    }
+
+    impl core::default::Default for P1Config {
+        fn default() -> Self {
+            Self {
+                enable_adaptive: true,
+                default_value: 11,
+                edge_value: 10,
+                smooth_value: 22,
+                edge_threshold: 15,
+                smooth_threshold: 5,
+            }
+        }
+    }
+
+    #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
+    struct P2Config {
+        enable_adaptive: bool,
+        default_value: u8,
+        edge_value: u8,
+        smooth_value: u8,
+    }
+
+    impl core::default::Default for P2Config {
+        fn default() -> Self {
+            Self {
+                enable_adaptive: true,
+                default_value: 33,
+                edge_value: 22,
+                smooth_value: 63,
+            }
+        }
+    }
+
+    #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
+    pub struct CensusTransform {
+        kernel_size: KernelSize,
+        kernel_mask: u64,
+        enable_mean_mode: bool,
+        threshold: u32,
+        noise_threshold_offset: i8,
+        noise_threshold_scale: i8,
+    }
+    
+    impl core::default::Default for CensusTransform {
+        fn default() -> Self {
+            Self {
+                kernel_size: KernelSize::Auto,
+                kernel_mask: 0,
+                enable_mean_mode: true,
+                threshold: 0,
+                noise_threshold_offset: 1,
+                noise_threshold_scale: 1,
+            }
+        }
+    }
+
+    #[derive(serde_repr::Deserialize_repr, serde_repr::Serialize_repr, Debug, PartialEq)]
+    #[repr(i32)]
+    pub enum KernelSize {
+        Auto = -1,
+        Kernel5x5 = 0,
+        Kernel7x7 = 1,
+        Kernel7x9 = 2,
+    }
+
+    #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
+    struct CostMatching {
+        disparity_width: DisparityWidth,
+        enable_companding: bool,
+        invalid_disparity_value: u8,
+        confidence_threshold: u8,
+        enable_software_confidence_thresholding: bool,
+        linear_equation_parameters: LinearEquationParameters,
+    }
+    impl core::default::Default for CostMatching {
+        fn default() -> Self {
+            Self {
+                disparity_width: DisparityWidth::Disparity96,
+                enable_companding: false,
+                invalid_disparity_value: 0,
+                confidence_threshold: 55,
+                enable_software_confidence_thresholding: false,
+                linear_equation_parameters: Default::default(),
+            }
+        }
+    }
+
+    #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
+    struct LinearEquationParameters {
+        alpha: u8,
+        beta: u8,
+        threshold: u8,
+    }
+    impl core::default::Default for LinearEquationParameters {
+        fn default() -> Self {
+            Self {
+                alpha: 0,
+                beta: 0,
+                threshold: 127,
+            }
+        }
+    }
+
+    #[derive(serde_repr::Deserialize_repr, serde_repr::Serialize_repr, Debug, PartialEq)]
+    #[repr(u32)]
+    enum DisparityWidth {
+        Disparity64 = 0,
+        Disparity96 = 1,
+    }
+
+    #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
+    pub struct AlgorithmControl {
+        pub depth_align: DepthAlign,
+        pub depth_unit: DepthUnit,
+        pub custom_depth_unit_multiplier: f32,
+        pub enable_left_right_check: bool,
+        pub enable_software_left_right_check: bool,
+        pub enable_extended: bool,
+        pub enable_subpixel: bool,
+        pub left_right_check_threshold: i32,
+        pub subpixel_fractional_bits: i32,
+        pub disparity_shift: i32,
+        pub center_alignment_shift_factor: Option<f32>,
+        pub invalidate_edge_pixel_count: i32,
+    }
+
+    impl core::default::Default for AlgorithmControl {
+        fn default() -> Self {
+            Self {
+                depth_align: DepthAlign::RectifiedLeft,
+                depth_unit: DepthUnit::Millimeter,
+                custom_depth_unit_multiplier: 1000.,
+                enable_left_right_check: true,
+                enable_software_left_right_check: false,
+                enable_extended: false,
+                enable_subpixel: true,
+                left_right_check_threshold: 10,
+                subpixel_fractional_bits: 5,
+                disparity_shift: 0,
+                center_alignment_shift_factor: None,
+                invalidate_edge_pixel_count: 0,
+            }
+        }
+    }
+    
+    #[derive(serde_repr::Deserialize_repr, serde_repr::Serialize_repr, Debug, PartialEq)]
+    #[repr(i32)]
+    pub enum DepthAlign {
+        RectifiedRight = 0,
+        RectifiedLeft = 1,
+        Center = 2,
+    }
+
+    #[derive(serde_repr::Deserialize_repr, serde_repr::Serialize_repr, Debug, PartialEq)]
+    #[repr(i32)]
+    pub enum LengthUnit {
+        Meter = 0,
+        Centimeter = 1,
+        Millimeter = 2,
+        Inch = 3,
+        Foot = 4,
+        Custom = 5,
+    }
+
+    pub type DepthUnit = LengthUnit;
+
+    #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
+    pub struct PostProcessing {
+        filtering_order: [Filter; 5],
+        median: MedianFilter,
+        bilateral_sigma_value: i16,
+        spacial_filter: SpatialFilter,
+        temporal_filter: TemporalFilter,
+        threshold_filter: ThresholdFilter,
+        brightness_filter: BrightnessFilter,
+        speckle_filter: SpeckleFilter,
+        decimation_filter: DecimationFilter,
+        hole_filling: HoleFilling,
+        adaptive_median_filter: AdaptiveMedianFilter,
+    }
+    
+    impl core::default::Default for PostProcessing {
+        fn default() -> Self {
+            Self {
+                filtering_order: [Filter::Median, Filter::Decimation, Filter::Speckle, Filter::Spatial, Filter::Temporal],
+                median: MedianFilter::Off,
+                bilateral_sigma_value: 0,
+                spacial_filter: Default::default(),
+                temporal_filter: Default::default(),
+                threshold_filter: Default::default(),
+                brightness_filter: Default::default(),
+                speckle_filter: Default::default(),
+                decimation_filter: Default::default(),
+                hole_filling: Default::default(),
+                adaptive_median_filter: Default::default(),
+            }
+        }
+    }
+
+    #[derive(serde_repr::Deserialize_repr, serde_repr::Serialize_repr, Debug, PartialEq)]
+    #[repr(i32)]
+    pub enum Filter {
+        None = 0,
+        Decimation = 1,
+        Speckle = 2,
+        Median = 3,
+        Spatial = 4,
+        Temporal = 5,
+    }
+
+    #[derive(serde_repr::Deserialize_repr, serde_repr::Serialize_repr, Debug, PartialEq)]
+    #[repr(i32)]
+    pub enum MedianFilter {
+        Off = 0,
+        Kernel3x3 = 3,
+        Kernel5x5 = 5,
+        Kernel7x7 = 7,
+    }
+
+    #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
+    struct ThresholdFilter {
+        min_range: i32,
+        max_range: i32,
+    }
+    
+    impl core::default::Default for ThresholdFilter {
+        fn default() -> Self {
+            Self {
+                min_range: 0,
+                max_range: u16::MAX as i32,
+            }
+        }
+    }
+
+    #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
+    struct BrightnessFilter {
+        min_brightness: i32,
+        max_brightness: i32,
+    }
+
+    impl core::default::Default for BrightnessFilter {
+        fn default() -> Self {
+            Self {
+                min_brightness: 0,
+                max_brightness: (u8::MAX as i32) + 1,
+            }
+        }
+    }
+
+    #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
+    struct SpeckleFilter {
+        enable: bool,
+        range: u32,
+        difference_threshold: u32,
+    }
+    
+    impl core::default::Default for SpeckleFilter {
+        fn default() -> Self {
+            Self {
+                enable: false,
+                range: 50,
+                difference_threshold: 2,
+            }
+        }
+    }
+
+    #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
+    struct DecimationFilter {
+        decimation_factor: u32,
+        decimation_mode: DecimationMode,
+    }
+
+    impl core::default::Default for DecimationFilter {
+        fn default() -> Self {
+            Self {
+                decimation_factor: 1,
+                decimation_mode: DecimationMode::PixelSkipping,
+            }
+        }
+    }
+
+    #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
+    struct HoleFilling {
+        enable: bool,
+        high_confidence_threshold: u8,
+        fill_confidence_threshold: u8,
+        min_valid_disparity: u8,
+        invalidate_disparities: bool,
+    }
+
+    impl core::default::Default for HoleFilling {
+        fn default() -> Self {
+            Self {
+                enable: true,
+                high_confidence_threshold: 210,
+                fill_confidence_threshold: 200,
+                min_valid_disparity: 1,
+                invalidate_disparities: true,
+            }
+        }
+    }
+
+    #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
+    struct AdaptiveMedianFilter {
+        enable: bool,
+        confidence_threshold: u8,
+    }
+
+    impl core::default::Default for AdaptiveMedianFilter {
+        fn default() -> Self {
+            Self {
+                enable: true,
+                confidence_threshold: 200,
+            }
+        }
+    }
+
+    #[derive(serde_repr::Deserialize_repr, serde_repr::Serialize_repr, Debug, PartialEq)]
+    #[repr(i32)]
+    enum DecimationMode {
+        PixelSkipping = 0,
+        NonZeroMedian = 1,
+        NonZeroMean = 2,
+    }
+
+    #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
+    struct TemporalFilter {
+        enable: bool,
+        persistency_mode: PersistencyMode,
+        alpha: f32,
+        delta: i32,
+    }
+
+    impl core::default::Default for TemporalFilter {
+        fn default() -> Self {
+            Self {
+                enable: false,
+                persistency_mode: PersistencyMode::Valid2InLast4,
+                alpha: 0.4,
+                delta: 3,
+            }
+        }
+    }
+
+    #[derive(serde_repr::Deserialize_repr, serde_repr::Serialize_repr, Debug, PartialEq)]
+    #[repr(i32)]
+    enum PersistencyMode {
+        Off = 0,
+        Valid8OutOf8 = 1,
+        Valid2InLast3 = 2,
+        Valid2InLast4 = 3,
+        Valid2OutOf8 = 4,
+        Valid1InLast2 = 5,
+        Valid1InLast5 = 6,
+        Valid1InLast8 = 7,
+        Indefinitely = 8,
+    }
+
+    #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
+    struct SpatialFilter {
+        enable: bool,
+        hole_filling_radius: u8,
+        alpha: f32,
+        delta: i32,
+        num_iterations: i32,
+    }
+    
+    impl core::default::Default for SpatialFilter {
+        fn default() -> Self {
+            Self {
+                enable: false,
+                hole_filling_radius: 2,
+                alpha: 0.5,
+                delta: 3,
+                num_iterations: 1,
+            }
+        }
     }
 
     #[test]
@@ -3529,7 +4368,7 @@ mod pipeline {
         let mut out = pipe.create_node::<XLinkOut>();
 
         let id = camera.request_output(CameraCapability {
-            size: Capability::new_single((640, 480)),
+            size: Capability::new_single((640, 400)),
             fps: Capability::new_none(),
             ty: None,
             enable_undistortion: None,
@@ -3543,6 +4382,52 @@ mod pipeline {
 
         assert_eq!(pipe.connections.len(), 1);
         assert_eq!(pipe.nodes.len(), 2);
+    }
+
+    #[test]
+    fn pipeline_schema_stereo() {
+        let mut pipe = Pipeline::new();
+        let mut camera_left = pipe.create_node::<Camera>();
+        camera_left.properties_mut().board_socket = crate::rpc::CameraBoardSocket::B;
+
+        camera_left.request_output(CameraCapability {
+            size: Capability::new_single((1920, 1200)),
+            fps: Capability::new_none(),
+            ty: None,
+            enable_undistortion: None,
+            isp_output: true,
+            resize_mode: FrameResize::Crop,
+        });
+
+        let cam_left = camera_left.requested_camera_outputs().next().unwrap();
+
+        let mut camera_right = pipe.create_node::<Camera>();
+        camera_right.properties_mut().board_socket = crate::rpc::CameraBoardSocket::C;
+
+        camera_right.request_output(CameraCapability {
+            size: Capability::new_single((1920, 1200)),
+            fps: Capability::new_none(),
+            ty: None,
+            enable_undistortion: None,
+            isp_output: true,
+            resize_mode: FrameResize::Crop,
+        });
+
+        let cam_right = camera_right.requested_camera_outputs().next().unwrap();
+
+
+        let mut stereo = pipe.create_node::<StereoDepth>();
+
+        pipe.link(cam_left, stereo.input().left);
+        pipe.link(cam_right, stereo.input().right);
+
+        let mut out = pipe.create_node::<XLinkOut>();
+
+        let xlink_out = pipe.create_output_queue(stereo.output().disparity, &mut out);
+
+        assert_eq!(pipe.connections.len(), 3);
+        assert_eq!(pipe.nodes.len(), 4);
+        let schema = pipe.build("DEVICE");
     }
 
     #[test]
@@ -3650,7 +4535,105 @@ mod pipeline {
 
             assert_eq!(def, old);
 
-            panic!("camera props: {old:?}");
+            //panic!("camera props: {old:?}");
+        }
+
+        {
+            /*
+            let ours = vec![185, 23, 185, 7, 185, 12, 1, 2, 136, 0, 0, 122, 68, 1, 0, 0, 1, 10, 5, 0, 190, 0, 185, 11, 186, 5, 3, 1, 2, 4, 5, 0, 0, 185, 5, 0, 2, 136, 0, 0, 0, 63, 3, 1, 185, 4, 0, 3, 136, 205, 204, 204, 62, 3, 185, 2, 0, 134, 255, 255, 0, 0, 185, 2, 0, 133, 255, 0, 185, 3, 0, 50, 2, 185, 2, 1, 0, 185, 5, 1, 128, 210, 128, 200, 1, 1, 185, 2, 1, 128, 200, 185, 6, 255, 0, 1, 0, 1, 1, 185, 6, 1, 0, 0, 55, 0, 185, 3, 0, 0, 127, 185, 7, 1, 128, 250, 129, 244, 1, 128, 250, 129, 244, 1, 185, 6, 1, 11, 10, 22, 15, 5, 185, 4, 1, 33, 22, 63, 185, 6, 20, 4, 1, 8, 2, 0, 2, 255, 1, 0, 190, 190, 190, 190, 1, 185, 5, 189, 0, 189, 0, 190, 16, 16, 0, 3, 255, 255, 1, 190, 1, 190, 190, 190, 190, 190, 190];
+            */
+
+            let theirs = vec![185,23,185,7,185,12,1,2,136,0,0,122,68,1,0,1,1,10,5,0,190,0,185,11,186,5,3,1,2,4,5,0,0,185,5,0,2,136,0,0,0,63,3,1,185,4,0,3,136,205,204,204,62,3,185,2,0,134,255,255,0,0,185,2,0,133,0,1,185,3,0,50,2,185,2,1,0,185,5,1,128,210,128,200,1,1,185,2,1,128,200,185,6,255,0,1,0,1,1,185,6,1,0,0,55,0,185,3,0,2,127,185,7,1,128,250,129,244,1,128,250,129,244,1,185,6,1,11,10,22,15,5,185,4,1,33,22,63,185,6,20,4,1,8,2,0,2,255,1,0,190,190,190,190,1,185,5,189,0,189,0,190,16,16,0,3,255,255,1,190,1,190,190,190,190,190,190];
+
+            let old = RnopDeserializer::deserialize::<StereoDepthProperties>(&theirs).unwrap();
+
+            let mut props = StereoDepthProperties::default();
+            //props.initial_config.algorithm_control.enable_extended = false;
+            props.initial_config.algorithm_control.enable_left_right_check = false;
+            props.initial_config.algorithm_control.enable_software_left_right_check = true;
+            props.initial_config.algorithm_control.enable_subpixel = false;
+            props.initial_config.post_processing.spacial_filter.enable = true;
+            props.initial_config.post_processing.temporal_filter.enable = true;
+            props.initial_config.post_processing.speckle_filter.enable = true;
+            props.initial_config.post_processing.hole_filling.enable = false;
+            props.initial_config.post_processing.hole_filling.invalidate_disparities = false;
+            props.initial_config.post_processing.adaptive_median_filter.enable = false;
+
+            assert_eq!(props.initial_config.post_processing, old.initial_config.post_processing);
+
+            // right camera
+            let cam_1 = vec![185,22,185,33,0,3,0,136,0,0,0,0,0,0,185,3,0,0,0,185,5,129,16,15,129,228,125,129,86,91,0,3,185,5,0,0,129,102,111,118,0,0,0,0,0,0,0,0,0,0,185,3,0,0,0,185,3,0,0,0,0,0,0,132,129,2,0,0,0,0,80,84,0,186,0,2,255,189,0,255,255,255,255,255,136,0,0,128,191,136,0,0,128,191,0,3,134,0,0,160,0,3,134,0,0,160,0,4,4,4,190,190,186,1,185,6,185,1,184,0,186,2,129,128,7,129,176,4,185,1,190,190,0,190,0];
+
+            let right = RnopDeserializer::deserialize::<CameraProperties>(&cam_1).unwrap();
+
+            let mut cam_r = CameraProperties::default();
+            cam_r.initial_control.ae_region.x = 3856;
+            cam_r.initial_control.ae_region.y = 32228;
+            cam_r.initial_control.ae_region.width = 23382;
+            cam_r.initial_control.ae_region.height = 0;
+            cam_r.initial_control.ae_region.priority = 3;
+
+            cam_r.initial_control.af_region.width = 28518;
+            cam_r.initial_control.af_region.height = 118;
+
+            cam_r.initial_control.ae_lock_mode = true;
+            cam_r.initial_control.awb_lock_mode = true;
+
+            cam_r.initial_control.strobe_config.enable = true;
+            cam_r.initial_control.contrast = -127;
+            cam_r.initial_control.saturation = 2;
+            cam_r.initial_control.low_power_frame_burst = 80;
+            cam_r.initial_control.low_power_frame_discard = 84;
+            cam_r.initial_control.enable_hdr = true;
+
+            cam_r.board_socket = crate::rpc::CameraBoardSocket::C;
+
+            cam_r.output_requests.push(CameraCapability {
+                size: Capability::new_single((1920, 1200)),
+                fps: Capability::new_none(),
+                ty: None,
+                enable_undistortion: None,
+                isp_output: true,
+                resize_mode: FrameResize::Crop,
+            });
+
+            assert_eq!(cam_r, right);
+
+            // left cam
+
+
+            let cam_2 = vec![185,22,185,33,0,3,0,136,0,0,0,0,0,0,185,3,0,0,0,185,5,0,0,0,0,0,185,5,129,45,19,0,0,0,129,45,19,0,0,0,0,0,0,128,250,128,165,9,185,3,0,0,0,185,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,186,0,1,255,189,0,255,255,255,255,255,136,0,0,128,191,136,0,0,128,191,0,3,134,0,0,160,0,3,134,0,0,160,0,4,4,4,190,190,186,1,185,6,185,1,184,0,186,2,129,128,7,129,176,4,185,1,190,190,0,190,0];
+            let val = rnop::Value::parse(&cam_2);
+            panic!("{val:?}");
+
+            let left = RnopDeserializer::deserialize::<CameraProperties>(&cam_2).unwrap();
+
+            let mut cam_l = CameraProperties::default();
+            cam_l.initial_control.af_region.x = 4909;
+            cam_l.initial_control.af_region.priority = 4909;
+
+            cam_l.initial_control.ae_lock_mode = true;
+            cam_l.initial_control.awb_lock_mode = true;
+
+            cam_l.initial_control.strobe_config.enable = true;
+            //cam_l.initial_control.contrast = -127;
+            //cam_l.initial_control.saturation = 2;
+            //cam_l.initial_control.low_power_frame_burst = 80;
+            //cam_l.initial_control.low_power_frame_discard = 84;
+            //cam_l.initial_control.enable_hdr = true;
+
+            cam_l.board_socket = crate::rpc::CameraBoardSocket::B;
+
+            cam_l.output_requests.push(CameraCapability {
+                size: Capability::new_single((1920, 1200)),
+                fps: Capability::new_none(),
+                ty: None,
+                enable_undistortion: None,
+                isp_output: false,
+                resize_mode: FrameResize::Crop,
+            });
+
+            //assert_eq!(cam_l, left);
         }
     }
 
@@ -4326,7 +5309,7 @@ mod rpc {
         context: String,
     }
 
-    #[derive(serde_repr::Deserialize_repr, Debug)]
+    #[derive(serde_repr::Deserialize_repr, serde_repr::Serialize_repr, Debug, PartialEq)]
     #[repr(i32)]
     pub enum ProcessorType {
         LeonCss = 0,
