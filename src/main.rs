@@ -365,36 +365,35 @@ async fn main() {
         }
 
         fn stereo_pipeline() -> (rpc::PipelineSchema, pipeline::OutputQueue<pipeline::CameraFrame, pipeline::RnopDeserializer, pipeline::queue_state::Pending>) {
+            const CAMERA_SIZE: (u32, u32) = (1280, 720);
+
             let mut pipe = pipeline::Pipeline::new();
             let mut camera_left = pipe.create_node::<pipeline::Camera>();
             let cam_l = camera_left.properties_mut();
             {
-                /*
-                // x: 12470, y: 0, width: 0, height: 0, priority: 12470
-                cam_l.initial_control.af_region.x = 12470;
-                cam_l.initial_control.af_region.priority = 12470;
-                */
+                // TODO: figure out how exactly these regions are being changed
+                //      - they seem to differ every time its ran
+                //      - maybe from querying the device?
+                cam_l.initial_control.af_region.x = 17586;
+                cam_l.initial_control.af_region.priority = 17586;
 
-                /*
                 cam_l.initial_control.ae_lock_mode = false;
                 cam_l.initial_control.awb_lock_mode = false;
-                */
 
 
-                /*
                 cam_l.initial_control.strobe_config.enable = false;
                 // control_mode: 132, effect_mode: 60, frame_sync_mode: 25
-                cam_l.initial_control.control_mode = 132;
-                cam_l.initial_control.effect_mode = 60;
-                cam_l.initial_control.frame_sync_mode = 25;
+                // control_mode: 27, effect_mode: 146, frame_sync_mode: 35
+                cam_l.initial_control.control_mode = 27;
+                cam_l.initial_control.effect_mode = 146;
+                cam_l.initial_control.frame_sync_mode = 35;
                 cam_l.initial_control.enable_hdr = false;
-                */
 
                 cam_l.board_socket = crate::rpc::CameraBoardSocket::B;
             }
 
             camera_left.request_output(pipeline::CameraCapability {
-                size: pipeline::Capability::new_single((640, 400)),
+                size: pipeline::Capability::new_single(CAMERA_SIZE),
                 fps: pipeline::Capability::new_none(),
                 ty: None,
                 enable_undistortion: None,
@@ -407,39 +406,32 @@ async fn main() {
             let mut camera_right = pipe.create_node::<pipeline::Camera>();
             let cam_r = camera_right.properties_mut();
             {
-                /*
-                // x: 16176, y: 38666, width: 23932, height: 0, priority: 3
-                cam_r.initial_control.ae_region.x = 16176;
-                cam_r.initial_control.ae_region.y = 38666;
-                cam_r.initial_control.ae_region.width = 23932;
+                cam_r.initial_control.ae_region.x = 48944;
+                cam_r.initial_control.ae_region.y = 31727;
+                cam_r.initial_control.ae_region.width = 24153;
                 cam_r.initial_control.ae_region.height = 0;
                 cam_r.initial_control.ae_region.priority = 3;
 
                 // x: 0, y: 0, width: 28518, height: 118, priority: 0
                 cam_r.initial_control.af_region.width = 28518;
                 cam_r.initial_control.af_region.height = 118;
-                */
 
-                /*
                 cam_r.initial_control.ae_lock_mode = false;
                 cam_r.initial_control.awb_lock_mode = false;
 
                 cam_r.initial_control.strobe_config.enable = false;
-                */
                 cam_r.initial_control.contrast = -127;
                 cam_r.initial_control.saturation = 2;
                 // low_power_frame_burst: 176, low_power_frame_discard: 132
                 cam_r.initial_control.low_power_frame_burst = 176;
-                cam_r.initial_control.low_power_frame_discard = 132;
-                /*
+                cam_r.initial_control.low_power_frame_discard = 4;
                 cam_r.initial_control.enable_hdr = false;
-                */
 
                 cam_r.board_socket = crate::rpc::CameraBoardSocket::C;
             }
 
             camera_right.request_output(pipeline::CameraCapability {
-                size: pipeline::Capability::new_single((640, 400)),
+                size: pipeline::Capability::new_single(CAMERA_SIZE),
                 fps: pipeline::Capability::new_none(),
                 ty: None,
                 enable_undistortion: None,
@@ -525,6 +517,11 @@ async fn main() {
             (pipe.build(DEVICE_ID), xlink_out)
         }
 
+        fn rgbd_pipeline() {
+            // might need a imagemanip node
+            todo!()
+        }
+
         let (schema, out) = stereo_pipeline();
         //let (schema, out1, out2) = camera_pipeline_dynamic();
 
@@ -556,16 +553,49 @@ async fn main() {
         println!("\n\ngot output queue\n\n");
 
 
+        use opencv::highgui;
+
+        let colored_window = "disparity color";
+        highgui::named_window(colored_window, highgui::WINDOW_AUTOSIZE);
+
+        let window = "disparity";
+        highgui::named_window(window, highgui::WINDOW_AUTOSIZE);
+
+        let mut max_disparity = 0.;
+
         loop {
             tokio::select! {
                 msgs = logger.read() => {
                     for msg in msgs {
-                        println!("logger: {msg:?}");
+                        if matches!(msg.log_level, LogLevel::Error | LogLevel::Warn | LogLevel::Critical | LogLevel::Info) {
+                            println!("logger: {msg:?}");
+                        }
                     }
                 }
                 res = queue.read() => {
-                    let (r, _) = res.unwrap();
-                    println!("{r:?}");
+                    let frame = res.unwrap();
+
+                    let mat = frame.as_mat();
+
+                    let mut local_max = 0.;
+
+                    opencv::core::min_max_loc(&*mat, None, Some(&mut local_max), None, None, &opencv::core::no_array()).unwrap();
+
+                    //max_disparity = f64::max(max_disparity, local_max);
+
+
+                    max_disparity = local_max;
+                    
+                    use opencv::prelude::MatTraitConst;
+                    let mut normalized = opencv::core::Mat::default();
+                    mat.convert_to(&mut normalized, opencv::core::CV_8UC1, 255./max_disparity, 0.).unwrap();
+
+                    let mut colorized = opencv::core::Mat::default();
+                    opencv::imgproc::apply_color_map(&normalized, &mut colorized, opencv::imgproc::COLORMAP_JET).unwrap();
+
+                    highgui::imshow(colored_window, &colorized).unwrap();
+                    highgui::imshow(window, &*mat).unwrap();
+                    highgui::wait_key(1);
                 }
             }
         }
@@ -2111,10 +2141,7 @@ mod pipeline {
         inner: Output<PipelineEvent, RnopDeserializer>,
     }
 
-    impl <D: Deserializer> IoDeserializeable<D> for PipelineEvent {
-        type Metadata = PipelineEvent;
-        type Output = ();
-    }
+    impl MetadataOnly for PipelineEvent {}
 
     #[derive(serde::Deserialize)]
     struct PipelineEvent {
@@ -2483,6 +2510,17 @@ mod pipeline {
 
         fn simplify(this: <T as IoDeserializeable<D>>::Metadata, bytes: Vec<u8>) -> Self::Out {
             (this, bytes)
+        }
+    }
+
+    impl <D: Deserializer> Simplify<D, CameraFrame> for (CameraFrame, Frame) {
+        type Out = Frame;
+
+        fn simplify(this: CameraFrame, bytes: Vec<u8>) -> Self::Out {
+            Frame {
+                metadata: this,
+                bytes,
+            }
         }
     }
 
@@ -2888,14 +2926,89 @@ mod pipeline {
         }
     }
 
+    pub struct Frame {
+        metadata: CameraFrame,
+        bytes: Vec<u8>,
+    }
+
+    // validates the lifetime of the mat,
+    // since the data is borrowed inside it
+    pub struct Mat<'a> {
+        inner: opencv::core::Mat,
+        _pd: core::marker::PhantomData<&'a ()>,
+    }
+
+    impl <'a> core::ops::Deref for Mat<'a> {
+        type Target = opencv::core::Mat;
+        fn deref(&self) -> &Self::Target {
+            &self.inner
+        }
+    }
+
+    impl <'a> core::convert::AsRef<opencv::core::Mat> for Mat<'a> {
+        fn as_ref(&self) -> &opencv::core::Mat {
+            &self.inner
+        }
+    }
+
+    impl <'a> core::borrow::Borrow<opencv::core::Mat> for Mat<'a> {
+        fn borrow(&self) -> &opencv::core::Mat {
+            &self.inner
+        }
+    }
+
+    impl Frame {
+        pub fn as_mat(&self) -> Mat<'_> {
+            let width = self.metadata.fb.width;
+            let height = self.metadata.fb.height;
+            use crate::pipeline::FrameType;
+            let (ty, width, height) = match self.metadata.fb.ty {
+                FrameType::Rgb888i | FrameType::Bgr888i => (opencv::core::CV_8UC3, width, height),
+                FrameType::Rgb888p | FrameType::Bgr888p => (opencv::core::CV_8UC1, width, height * 3),
+                FrameType::Yuv420p | FrameType::Nv12 | FrameType::Nv21 => (opencv::core::CV_8UC1, width, height * 3 / 2),
+                FrameType::Yuv422i => (opencv::core::CV_8UC2, width, height),
+                FrameType::Raw8 | FrameType::Gray8 => (opencv::core::CV_8UC1, width, height),
+                FrameType::GrayF16 => (opencv::core::CV_16FC1, width, height),
+                FrameType::Raw16 | FrameType::Raw14 | FrameType::Raw12 | FrameType::Raw10 => (opencv::core::CV_16UC1, width, height),
+                FrameType::Raw32 => (opencv::core::CV_32SC1, width, height),
+                FrameType::Rgb161616 => (opencv::core::CV_16UC3, width, height),
+                FrameType::RgbF16F16F16i | FrameType::BgrF16F16F16i => (opencv::core::CV_16FC3, width, height),
+                FrameType::RgbF16F16F16p | FrameType::BgrF16F16F16p => (opencv::core::CV_16FC1, width, height * 3),
+                _ => (opencv::core::CV_8UC1, self.bytes.len() as _, 1),
+            };
+
+            let size = opencv::core::Size {
+                width: width as _,
+                height: height as _,
+            };
+
+            let inner = unsafe {
+                opencv::core::Mat::new_size_with_data_unsafe_def(size, ty, self.bytes.as_ptr().cast::<std::ffi::c_void>() as *mut _).unwrap()
+            };
+            Mat {
+                inner,
+                _pd: core::marker::PhantomData,
+            }
+        }
+    }
+
+    impl core::fmt::Debug for Frame {
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            f.debug_struct("Frame")
+                .field("metadata", &self.metadata)
+                .field("frame_bytes_len", &self.bytes.len())
+                .finish()
+        }
+    }
+
     impl <D: Deserializer> IoDeserializeable<D> for CameraFrame {
         type Metadata = Self;
-        type Output = Vec<u8>;
+        type Output = Frame;
     }
 
     impl <S: Serializer> IoSerializeable<S> for CameraFrame {
         type Metadata = Self;
-        type Output = Vec<u8>;
+        type Output = Frame;
     }
 
     impl StaticIoDesc for In<CameraFrame> {
@@ -4487,12 +4600,14 @@ mod pipeline {
 
     #[test]
     fn pipeline_schema_stereo() {
+        const CAMERA_SIZE: (u32, u32) = (1280, 720);
+
         let mut pipe = Pipeline::new();
         let mut camera_left = pipe.create_node::<Camera>();
         camera_left.properties_mut().board_socket = crate::rpc::CameraBoardSocket::B;
 
         camera_left.request_output(CameraCapability {
-            size: Capability::new_single((1920, 1200)),
+            size: Capability::new_single(CAMERA_SIZE),
             fps: Capability::new_none(),
             ty: None,
             enable_undistortion: None,
@@ -4506,7 +4621,7 @@ mod pipeline {
         camera_right.properties_mut().board_socket = crate::rpc::CameraBoardSocket::C;
 
         camera_right.request_output(CameraCapability {
-            size: Capability::new_single((1920, 1200)),
+            size: Capability::new_single(CAMERA_SIZE),
             fps: Capability::new_none(),
             ty: None,
             enable_undistortion: None,
@@ -4646,6 +4761,8 @@ mod pipeline {
             */
 
             //let theirs = vec![185,23,185,7,185,12,1,2,136,0,0,122,68,1,0,1,1,10,5,0,190,0,185,11,186,5,3,1,2,4,5,0,0,185,5,0,2,136,0,0,0,63,3,1,185,4,0,3,136,205,204,204,62,3,185,2,0,134,255,255,0,0,185,2,0,133,0,1,185,3,0,50,2,185,2,1,0,185,5,1,128,210,128,200,1,1,185,2,1,128,200,185,6,255,0,1,0,1,1,185,6,1,0,0,55,0,185,3,0,2,127,185,7,1,128,250,129,244,1,128,250,129,244,1,185,6,1,11,10,22,15,5,185,4,1,33,22,63,185,6,20,4,1,8,2,0,2,255,1,0,190,190,190,190,1,185,5,189,0,189,0,190,16,16,0,3,255,255,1,190,1,190,190,190,190,190,190];
+            //let theirs = vec![185,23,185,7,185,12,1,2,136,0,0,122,68,1,0,0,0,10,3,0,190,0,185,11,186,5,1,3,2,4,5,7,0,185,5,1,1,136,0,0,0,63,3,1,185,4,1,3,136,0,0,0,63,3,185,2,0,133,152,58,185,2,0,133,0,1,185,3,1,128,200,2,185,2,2,0,185,5,1,100,128,210,3,1,185,2,1,128,200,185,6,255,0,1,0,1,1,185,6,1,0,0,15,0,185,3,0,2,127,185,7,1,128,250,129,244,1,128,250,129,244,1,185,6,1,45,40,49,15,5,185,4,1,95,90,99,185,6,20,10,1,2,5,0,2,255,1,0,190,190,190,190,1,185,5,189,0,189,0,190,16,16,0,3,3,3,1,190,1,190,190,190,190,190,190];
+            //let theirs = vec![185,23,185,7,185,12,1,2,136,0,0,122,68,1,0,0,0,10,3,0,190,0,185,11,186,5,1,3,2,4,5,7,0,185,5,1,1,136,0,0,0,63,3,1,185,4,1,3,136,0,0,0,63,3,185,2,0,133,152,58,185,2,0,133,0,1,185,3,1,128,200,2,185,2,2,0,185,5,1,100,128,210,3,1,185,2,1,128,200,185,6,255,0,1,0,1,1,185,6,1,0,0,15,0,185,3,0,2,127,185,7,1,128,250,129,244,1,128,250,129,244,1,185,6,1,45,40,49,15,5,185,4,1,95,90,99,185,6,20,10,1,2,5,0,2,255,1,0,190,190,190,190,1,185,5,189,0,189,0,190,16,16,0,3,3,3,1,190,1,190,190,190,190,190,190];
             let theirs = vec![185,23,185,7,185,12,1,2,136,0,0,122,68,1,0,0,0,10,3,0,190,0,185,11,186,5,1,3,2,4,5,7,0,185,5,1,1,136,0,0,0,63,3,1,185,4,1,3,136,0,0,0,63,3,185,2,0,133,152,58,185,2,0,133,0,1,185,3,1,128,200,2,185,2,2,0,185,5,1,100,128,210,3,1,185,2,1,128,200,185,6,255,0,1,0,1,1,185,6,1,0,0,15,0,185,3,0,2,127,185,7,1,128,250,129,244,1,128,250,129,244,1,185,6,1,45,40,49,15,5,185,4,1,95,90,99,185,6,20,10,1,2,5,0,2,255,1,0,190,190,190,190,1,185,5,189,0,189,0,190,16,16,0,3,3,3,1,190,1,190,190,190,190,190,190];
             let their_val = rnop::Value::parse(&theirs).unwrap();
 
@@ -4726,17 +4843,17 @@ mod pipeline {
 
 
             // right camera
-            //let cam_1 = vec![185,22,185,33,0,3,0,136,0,0,0,0,0,0,185,3,0,0,0,185,5,129,16,15,129,228,125,129,86,91,0,3,185,5,0,0,129,102,111,118,0,0,0,0,0,0,0,0,0,0,185,3,0,0,0,185,3,0,0,0,0,0,0,132,129,2,0,0,0,0,80,84,0,186,0,2,255,189,0,255,255,255,255,255,136,0,0,128,191,136,0,0,128,191,0,3,134,0,0,160,0,3,134,0,0,160,0,4,4,4,190,190,186,1,185,6,185,1,184,0,186,2,129,128,7,129,176,4,185,1,190,190,0,190,0];
-            //let cam_1 = vec![185,22,185,33,0,3,0,136,0,0,0,0,0,0,185,3,0,0,0,185,5,129,48,175,129,127,242,129,15,91,0,3,185,5,0,0,129,102,111,118,0,0,0,0,0,0,0,0,0,0,185,3,0,0,0,185,3,0,0,0,0,0,0,132,129,2,0,0,0,0,128,176,128,244,0,186,0,2,255,189,0,255,255,255,255,255,136,0,0,128,191,136,0,0,128,191,0,3,134,0,0,160,0,3,134,0,0,160,0,4,4,4,190,190,186,1,185,6,185,1,184,0,186,2,129,128,2,129,144,1,185,1,190,190,0,190,0];
-            let cam_1 = vec![185,22,185,33,0,3,0,136,0,0,0,0,0,0,185,3,0,0,0,185,5,129,48,63,129,10,151,129,124,93,0,3,185,5,0,0,129,102,111,118,0,0,0,0,0,0,0,0,0,0,185,3,0,0,0,185,3,0,0,0,0,0,0,132,129,2,0,0,0,0,128,176,128,132,0,186,0,2,255,189,0,255,255,255,255,255,136,0,0,128,191,136,0,0,128,191,0,3,134,0,0,160,0,3,134,0,0,160,0,4,4,4,190,190,186,1,185,6,185,1,184,0,186,2,129,128,2,129,144,1,185,1,190,190,0,190,0];
+            //let cam_1 = vec![185,22,185,33,0,3,0,136,0,0,0,0,0,0,185,3,0,0,0,185,5,129,48,63,129,10,151,129,124,93,0,3,185,5,0,0,129,102,111,118,0,0,0,0,0,0,0,0,0,0,185,3,0,0,0,185,3,0,0,0,0,0,0,132,129,2,0,0,0,0,128,176,128,132,0,186,0,2,255,189,0,255,255,255,255,255,136,0,0,128,191,136,0,0,128,191,0,3,134,0,0,160,0,3,134,0,0,160,0,4,4,4,190,190,186,1,185,6,185,1,184,0,186,2,129,128,2,129,144,1,185,1,190,190,0,190,0];
+            let cam_1 = vec![185,22,185,33,0,3,0,136,0,0,0,0,0,0,185,3,0,0,0,185,5,129,48,191,129,239,123,129,89,94,0,3,185,5,0,0,129,102,111,118,0,0,0,0,0,0,0,0,0,0,185,3,0,0,0,185,3,0,0,0,0,0,0,132,129,2,0,0,0,0,128,176,4,0,186,0,2,255,189,0,255,255,255,255,255,136,0,0,128,191,136,0,0,128,191,0,3,134,0,0,160,0,3,134,0,0,160,0,4,4,4,190,190,186,1,185,6,185,1,184,0,186,2,129,128,2,129,144,1,185,1,190,190,0,190,0];
 
             let right = RnopDeserializer::deserialize::<CameraProperties>(&cam_1).unwrap();
 
             let mut cam_r = CameraProperties::default();
             // x: 16176, y: 38666, width: 23932, height: 0, priority: 3
-            cam_r.initial_control.ae_region.x = 16176;
-            cam_r.initial_control.ae_region.y = 38666;
-            cam_r.initial_control.ae_region.width = 23932;
+            // x: 48944, y: 31727, width: 24153, height: 0, priority: 3
+            cam_r.initial_control.ae_region.x = 48944;
+            cam_r.initial_control.ae_region.y = 31727;
+            cam_r.initial_control.ae_region.width = 24153;
             cam_r.initial_control.ae_region.height = 0;
             cam_r.initial_control.ae_region.priority = 3;
 
@@ -4752,7 +4869,7 @@ mod pipeline {
             cam_r.initial_control.saturation = 2;
             // low_power_frame_burst: 176, low_power_frame_discard: 132
             cam_r.initial_control.low_power_frame_burst = 176;
-            cam_r.initial_control.low_power_frame_discard = 132;
+            cam_r.initial_control.low_power_frame_discard = 4;
             cam_r.initial_control.enable_hdr = false;
 
             cam_r.board_socket = crate::rpc::CameraBoardSocket::C;
@@ -4773,11 +4890,8 @@ mod pipeline {
 
             // left cam
 
-
-            //let cam_2 = vec![185,22,185,33,0,3,0,136,0,0,0,0,0,0,185,3,0,0,0,185,5,0,0,0,0,0,185,5,129,81,46,0,0,0,129,81,46,0,0,0,0,0,0,114,128,238,23,185,3,0,0,0,185,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,186,0,1,255,189,0,255,255,255,255,255,136,0,0,128,191,136,0,0,128,191,0,3,134,0,0,160,0,3,134,0,0,160,0,4,4,4,190,190,186,1,185,6,185,1,184,0,186,2,129,128,2,129,144,1,185,1,190,190,0,190,0];
-            //let cam_2 = vec![185,22,185,33,0,3,0,136,0,0,0,0,0,0,185,3,0,0,0,185,5,0,0,0,0,0,185,5,129,45,19,0,0,0,129,45,19,0,0,0,0,0,0,128,250,128,165,9,185,3,0,0,0,185,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,186,0,1,255,189,0,255,255,255,255,255,136,0,0,128,191,136,0,0,128,191,0,3,134,0,0,160,0,3,134,0,0,160,0,4,4,4,190,190,186,1,185,6,185,1,184,0,186,2,129,128,7,129,176,4,185,1,190,190,0,190,0];
-            //let cam_2 = vec![185,22,185,33,0,3,0,136,0,0,0,0,0,0,185,3,0,0,0,185,5,0,0,0,0,0,185,5,129,47,35,0,0,0,129,47,35,0,0,0,0,0,0,128,231,128,239,17,185,3,0,0,0,185,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,186,0,1,255,189,0,255,255,255,255,255,136,0,0,128,191,136,0,0,128,191,0,3,134,0,0,160,0,3,134,0,0,160,0,4,4,4,190,190,186,1,185,6,185,1,184,0,186,2,129,128,2,129,144,1,185,1,190,190,0,190,0];
-            let cam_2 = vec![185,22,185,33,0,3,0,136,0,0,0,0,0,0,185,3,0,0,0,185,5,0,0,0,0,0,185,5,129,182,48,0,0,0,129,182,48,0,0,0,0,0,0,128,132,60,25,185,3,0,0,0,185,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,186,0,1,255,189,0,255,255,255,255,255,136,0,0,128,191,136,0,0,128,191,0,3,134,0,0,160,0,3,134,0,0,160,0,4,4,4,190,190,186,1,185,6,185,1,184,0,186,2,129,128,2,129,144,1,185,1,190,190,0,190,0];
+            //let cam_2 = vec![185,22,185,33,0,3,0,136,0,0,0,0,0,0,185,3,0,0,0,185,5,0,0,0,0,0,185,5,129,182,48,0,0,0,129,182,48,0,0,0,0,0,0,128,132,60,25,185,3,0,0,0,185,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,186,0,1,255,189,0,255,255,255,255,255,136,0,0,128,191,136,0,0,128,191,0,3,134,0,0,160,0,3,134,0,0,160,0,4,4,4,190,190,186,1,185,6,185,1,184,0,186,2,129,128,2,129,144,1,185,1,190,190,0,190,0];
+            let cam_2 = vec![185,22,185,33,0,3,0,136,0,0,0,0,0,0,185,3,0,0,0,185,5,0,0,0,0,0,185,5,129,178,68,0,0,0,129,178,68,0,0,0,0,0,0,27,128,146,35,185,3,0,0,0,185,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,186,0,1,255,189,0,255,255,255,255,255,136,0,0,128,191,136,0,0,128,191,0,3,134,0,0,160,0,3,134,0,0,160,0,4,4,4,190,190,186,1,185,6,185,1,184,0,186,2,129,128,2,129,144,1,185,1,190,190,0,190,0];
             let val = rnop::Value::parse(&cam_2);
             //panic!("{val:?}");
 
@@ -4786,8 +4900,8 @@ mod pipeline {
 
             let mut cam_l = CameraProperties::default();
             // x: 12470, y: 0, width: 0, height: 0, priority: 12470
-            cam_l.initial_control.af_region.x = 12470;
-            cam_l.initial_control.af_region.priority = 12470;
+            cam_l.initial_control.af_region.x = 17586;
+            cam_l.initial_control.af_region.priority = 17586;
 
             cam_l.initial_control.ae_lock_mode = false;
             cam_l.initial_control.awb_lock_mode = false;
@@ -4795,9 +4909,10 @@ mod pipeline {
 
             cam_l.initial_control.strobe_config.enable = false;
             // control_mode: 132, effect_mode: 60, frame_sync_mode: 25
-            cam_l.initial_control.control_mode = 132;
-            cam_l.initial_control.effect_mode = 60;
-            cam_l.initial_control.frame_sync_mode = 25;
+            // control_mode: 27, effect_mode: 146, frame_sync_mode: 35
+            cam_l.initial_control.control_mode = 27;
+            cam_l.initial_control.effect_mode = 146;
+            cam_l.initial_control.frame_sync_mode = 35;
             cam_l.initial_control.enable_hdr = false;
 
             cam_l.board_socket = crate::rpc::CameraBoardSocket::B;
@@ -5630,7 +5745,7 @@ pub mod logger {
     #[derive(serde::Deserialize, Debug)]
     pub struct LogMessage {
         node_id_name: String,
-        log_level: crate::rpc::LogLevel,
+        pub log_level: crate::rpc::LogLevel,
         time: crate::pipeline::Timestamp,
         color_range_start: u32,
         color_range_end: u32,
