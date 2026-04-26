@@ -170,6 +170,7 @@ async fn main() {
 
         connection.create_stream("__watchdog", 64).await.unwrap();
         connection.create_stream("__rpc_main", bootloader::MAX_PACKET_SIZE).await.unwrap();
+
         connection.create_stream("__log", 128).await.unwrap();
 
         //TODO: might have to do smth for the timesync thread
@@ -189,8 +190,7 @@ async fn main() {
 
         connection.wait_for_stream("__watchdog").await;
         connection.wait_for_stream("__rpc_main").await;
-        connection.wait_for_stream("__log").await;
-
+        let mut logger = connection.wait_for_logger().await;
 
         println!("got streams: {:?}", connection.created_streams);
 
@@ -369,18 +369,32 @@ async fn main() {
             let mut camera_left = pipe.create_node::<pipeline::Camera>();
             let cam_l = camera_left.properties_mut();
             {
-                cam_l.initial_control.af_region.x = 4909;
-                cam_l.initial_control.af_region.priority = 4909;
+                /*
+                // x: 12470, y: 0, width: 0, height: 0, priority: 12470
+                cam_l.initial_control.af_region.x = 12470;
+                cam_l.initial_control.af_region.priority = 12470;
+                */
 
-                cam_l.initial_control.ae_lock_mode = true;
-                cam_l.initial_control.awb_lock_mode = true;
+                /*
+                cam_l.initial_control.ae_lock_mode = false;
+                cam_l.initial_control.awb_lock_mode = false;
+                */
 
-                cam_l.initial_control.strobe_config.enable = true;
+
+                /*
+                cam_l.initial_control.strobe_config.enable = false;
+                // control_mode: 132, effect_mode: 60, frame_sync_mode: 25
+                cam_l.initial_control.control_mode = 132;
+                cam_l.initial_control.effect_mode = 60;
+                cam_l.initial_control.frame_sync_mode = 25;
+                cam_l.initial_control.enable_hdr = false;
+                */
+
                 cam_l.board_socket = crate::rpc::CameraBoardSocket::B;
             }
 
             camera_left.request_output(pipeline::CameraCapability {
-                size: pipeline::Capability::new_single((1920, 1200)),
+                size: pipeline::Capability::new_single((640, 400)),
                 fps: pipeline::Capability::new_none(),
                 ty: None,
                 enable_undistortion: None,
@@ -393,34 +407,43 @@ async fn main() {
             let mut camera_right = pipe.create_node::<pipeline::Camera>();
             let cam_r = camera_right.properties_mut();
             {
-                cam_r.initial_control.ae_region.x = 3856;
-                cam_r.initial_control.ae_region.y = 32228;
-                cam_r.initial_control.ae_region.width = 23382;
+                /*
+                // x: 16176, y: 38666, width: 23932, height: 0, priority: 3
+                cam_r.initial_control.ae_region.x = 16176;
+                cam_r.initial_control.ae_region.y = 38666;
+                cam_r.initial_control.ae_region.width = 23932;
                 cam_r.initial_control.ae_region.height = 0;
                 cam_r.initial_control.ae_region.priority = 3;
 
+                // x: 0, y: 0, width: 28518, height: 118, priority: 0
                 cam_r.initial_control.af_region.width = 28518;
                 cam_r.initial_control.af_region.height = 118;
+                */
 
-                cam_r.initial_control.ae_lock_mode = true;
-                cam_r.initial_control.awb_lock_mode = true;
+                /*
+                cam_r.initial_control.ae_lock_mode = false;
+                cam_r.initial_control.awb_lock_mode = false;
 
-                cam_r.initial_control.strobe_config.enable = true;
+                cam_r.initial_control.strobe_config.enable = false;
+                */
                 cam_r.initial_control.contrast = -127;
                 cam_r.initial_control.saturation = 2;
-                cam_r.initial_control.low_power_frame_burst = 80;
-                cam_r.initial_control.low_power_frame_discard = 84;
-                cam_r.initial_control.enable_hdr = true;
+                // low_power_frame_burst: 176, low_power_frame_discard: 132
+                cam_r.initial_control.low_power_frame_burst = 176;
+                cam_r.initial_control.low_power_frame_discard = 132;
+                /*
+                cam_r.initial_control.enable_hdr = false;
+                */
 
                 cam_r.board_socket = crate::rpc::CameraBoardSocket::C;
             }
 
             camera_right.request_output(pipeline::CameraCapability {
-                size: pipeline::Capability::new_single((1920, 1200)),
+                size: pipeline::Capability::new_single((640, 400)),
                 fps: pipeline::Capability::new_none(),
                 ty: None,
                 enable_undistortion: None,
-                isp_output: true,
+                isp_output: false,
                 resize_mode: pipeline::FrameResize::Crop,
             });
 
@@ -429,12 +452,75 @@ async fn main() {
 
             let mut stereo = pipe.create_node::<pipeline::StereoDepth>();
 
+            let props = stereo.properties_mut();
+
+            {
+                use crate::pipeline::Filter;
+                props.initial_config.algorithm_control.enable_extended = false;
+                props.initial_config.algorithm_control.enable_left_right_check = true;
+                props.initial_config.algorithm_control.enable_software_left_right_check = false;
+                props.initial_config.algorithm_control.enable_subpixel = false;
+                props.initial_config.algorithm_control.subpixel_fractional_bits = 3;
+                props.initial_config.post_processing.spatial_filter.enable = false;
+                props.initial_config.post_processing.temporal_filter.enable = false;
+                props.initial_config.post_processing.speckle_filter.enable = false;
+                props.initial_config.post_processing.hole_filling.enable = true;
+                props.initial_config.post_processing.hole_filling.invalidate_disparities = true;
+                props.initial_config.post_processing.adaptive_median_filter.enable = true;
+                props.initial_config.census_transform.enable_mean_mode = true;
+
+                props.initial_config.cost_matching.enable_companding = false;
+                props.initial_config.cost_matching.enable_software_confidence_thresholding = false;
+
+                props.initial_config.cost_aggregation.p1_config.enable_adaptive = true;
+                props.initial_config.cost_aggregation.p2_config.enable_adaptive = true;
+
+                props.initial_config.confidence_metrics.flatness_override = false;
+
+                props.enable_rectification = true;
+                props.enable_runtime_stereo_mode_switch = false;
+                props.keep_aspect_ratio = true;
+                props.focal_length_from_calibration = true;
+                props.enable_frame_sync = true;
+
+                props.initial_config.post_processing.filtering_order = [Filter::Decimation, Filter::Median, Filter::Speckle, Filter::Spatial, Filter::Temporal];
+                props.initial_config.post_processing.median = pipeline::MedianFilter::Kernel7x7;
+                props.initial_config.post_processing.spatial_filter.enable = true;
+                props.initial_config.post_processing.spatial_filter.hole_filling_radius = 1;
+                props.initial_config.post_processing.temporal_filter.enable = true;
+                props.initial_config.post_processing.temporal_filter.alpha = 0.5;
+                props.initial_config.post_processing.threshold_filter.max_range = 15000;
+                props.initial_config.post_processing.speckle_filter.enable = true;
+                props.initial_config.post_processing.speckle_filter.range = 200;
+                props.initial_config.post_processing.decimation_filter.decimation_factor = 2;
+                props.initial_config.post_processing.hole_filling.high_confidence_threshold = 100;
+                props.initial_config.post_processing.hole_filling.fill_confidence_threshold = 210;
+                props.initial_config.post_processing.hole_filling.min_valid_disparity = 3;
+
+                props.initial_config.cost_matching.confidence_threshold = 15;
+
+                props.initial_config.cost_aggregation.p1_config.default_value = 45;
+                props.initial_config.cost_aggregation.p1_config.edge_value = 40;
+                props.initial_config.cost_aggregation.p1_config.smooth_value = 49;
+
+                props.initial_config.cost_aggregation.p2_config.default_value = 95;
+                props.initial_config.cost_aggregation.p2_config.edge_value = 90;
+                props.initial_config.cost_aggregation.p2_config.smooth_value = 99;
+
+                props.initial_config.confidence_metrics.motion_vector_confidence_weight = 10;
+                props.initial_config.confidence_metrics.flatness_confidence_weight = 2;
+                props.initial_config.confidence_metrics.flatness_confidence_threshold = 5;
+
+                props.post_processing_shaves = 3;
+                props.post_processing_memory_slices = 3;
+            }
+
+            let mut out = pipe.create_node::<pipeline::XLinkOut>();
+            let xlink_out = pipe.create_output_queue(stereo.output().disparity, &mut out);
+
             pipe.link(cam_left, stereo.input().left);
             pipe.link(cam_right, stereo.input().right);
 
-            let mut out = pipe.create_node::<pipeline::XLinkOut>();
-
-            let xlink_out = pipe.create_output_queue(stereo.output().disparity, &mut out);
 
             (pipe.build(DEVICE_ID), xlink_out)
         }
@@ -462,22 +548,26 @@ async fn main() {
         let mut queue2 = connection.wait_for_output_queue(out2).await;
         */
 
+
+        println!("out: {out:?}");
+
         let mut queue = connection.wait_for_output_queue(out).await;
+
+        println!("\n\ngot output queue\n\n");
 
 
         loop {
-            let r = queue.read().await;
-            println!("{:?}", r.unwrap().0);
-            /*
             tokio::select! {
-                r = queue1.read() => {
-                    //println!("received custom: {:?}", r.unwrap().0);
+                msgs = logger.read() => {
+                    for msg in msgs {
+                        println!("logger: {msg:?}");
+                    }
                 }
-                r = queue2.read() => {
-                    //println!("received raw: {:?}", r.unwrap().0);
+                res = queue.read() => {
+                    let (r, _) = res.unwrap();
+                    println!("{r:?}");
                 }
             }
-            */
         }
     }
 }
@@ -959,6 +1049,7 @@ impl Connection {
             match ev {
                 IoEvent::CreatedStream(created_name, stream) => {
                     if created_name == name {
+                        println!("\n\ncreated stream: {stream:?}\n\n");
                         return pipeline::OutputQueue {
                             state: pipeline::queue_state::Ready(stream),
                             _pd: core::marker::PhantomData,
@@ -969,6 +1060,13 @@ impl Connection {
                 o => panic!("{o:?}")
             }
         }
+    }
+
+    async fn wait_for_logger(&mut self) -> logger::Logger {
+        self.wait_for_stream("__log").await;
+        let name = StreamName::new(b"__log").unwrap();
+        let stream = self.created_streams.remove(&name).unwrap();
+        logger::Logger(stream)
     }
 }
 
@@ -1684,8 +1782,6 @@ async fn io_thread(mut stream: tokio::net::TcpStream, io_evs: mpsc::Sender<IoEve
                     panic!("unknown event ty");
                 };
 
-                //println!("received: {header:?} ({len:?})");
-
                 match ty {
                     EventType::CreateStreamReq => {
                         let ev = Event::acknowledge_stream(header.stream_id, &header.name, header.size, header.id);
@@ -1761,7 +1857,6 @@ async fn io_thread(mut stream: tokio::net::TcpStream, io_evs: mpsc::Sender<IoEve
                         if let Some(IoStream { reader, ..}) = created_streams.get_mut(&header.stream_id) {
                             reader.send(read_buf).await.unwrap();
 
-
                             let ev = Event::acknowledge_write(header.stream_id, &header.name, header.size, header.id);
 
                             {
@@ -1800,7 +1895,6 @@ async fn io_thread(mut stream: tokio::net::TcpStream, io_evs: mpsc::Sender<IoEve
 
                 match ev {
                     StreamEvent::Write(mut header, data) => {
-                        println!("sending: {}", data.len());
                         header.id = id;
                         {
                             let header_buf = bytemuck::bytes_of(&header);
@@ -1931,6 +2025,7 @@ mod pipeline {
 
     pub struct ProtobufDeserializer;
     pub struct ProtobufSerializer;
+    #[derive(Debug)]
     pub struct RnopDeserializer;
     pub struct RnopSerializer;
     pub struct AnySerializer;
@@ -2345,10 +2440,13 @@ mod pipeline {
     impl CompatibleSerialization for (ProtobufSerializer, ProtobufDeserializer) {}
 
     pub mod queue_state {
+        #[derive(Debug)]
         pub struct Pending(pub(crate) crate::StreamName);
+        #[derive(Debug)]
         pub struct Ready(pub(crate) crate::ConnectionStream);
     }
 
+    #[derive(Debug)]
     pub struct OutputQueue<T, D, S> {
         pub(crate) state: S,
         pub(crate) _pd: core::marker::PhantomData<(T, D)>,
@@ -2702,7 +2800,7 @@ mod pipeline {
     }
 
     #[derive(serde::Deserialize, serde::Serialize, Debug, PartialEq)]
-    struct Timestamp {
+    pub struct Timestamp {
         sec: i64,
         nsec: i64,
     }
@@ -2833,9 +2931,12 @@ mod pipeline {
         pub ae_lock_mode: bool,
         pub awb_lock_mode: bool,
         pub capture_intent: CaptureIntent,
-        pub control_mode: ControlMode,
-        pub effect_mode: EffectMode,
-        pub frame_sync_mode: FrameSyncMode,
+        //pub control_mode: ControlMode,
+        pub control_mode: u8,
+        //pub effect_mode: EffectMode,
+        pub effect_mode: u8,
+        //pub frame_sync_mode: FrameSyncMode,
+        pub frame_sync_mode: u8,
         pub strobe_config: StrobeConfig,
         pub strobe_timings: StrobeTimings,
         pub ae_max_exposure_time_us: u32,
@@ -3865,7 +3966,7 @@ mod pipeline {
     pub struct StereoDepthConfig {
         pub algorithm_control: AlgorithmControl,
         pub post_processing: PostProcessing,
-        pub census_transorm: CensusTransform,
+        pub census_transform: CensusTransform,
         pub cost_matching: CostMatching,
         pub cost_aggregation: CostAggregation,
         pub confidence_metrics: ConfidenceMetrics,
@@ -3891,7 +3992,7 @@ mod pipeline {
             Self {
                 algorithm_control: Default::default(),
                 post_processing: Default::default(),
-                census_transorm: Default::default(),
+                census_transform: Default::default(),
                 cost_matching: Default::default(),
                 cost_aggregation: Default::default(),
                 confidence_metrics: Default::default(),
@@ -3901,13 +4002,13 @@ mod pipeline {
     }
 
     #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
-    struct ConfidenceMetrics {
-        occlusion_confidence_weight: u8,
-        motion_vector_confidence_weight: u8,
-        motion_vector_confidence_threshold: u8,
-        flatness_confidence_weight: u8,
-        flatness_confidence_threshold: u8,
-        flatness_override: bool,
+    pub struct ConfidenceMetrics {
+        pub occlusion_confidence_weight: u8,
+        pub motion_vector_confidence_weight: u8,
+        pub motion_vector_confidence_threshold: u8,
+        pub flatness_confidence_weight: u8,
+        pub flatness_confidence_threshold: u8,
+        pub flatness_override: bool,
     }
 
     impl core::default::Default for ConfidenceMetrics {
@@ -3924,14 +4025,14 @@ mod pipeline {
     }
     
     #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
-    struct CostAggregation {
-        division_factor: u8,
-        horizontal_penalty_cost_p1: u16,
-        horizontal_penalty_cost_p2: u16,
-        vertical_penalty_cost_p1: u16,
-        vertical_penalty_cost_p2: u16,
-        p1_config: P1Config,
-        p2_config: P2Config,
+    pub struct CostAggregation {
+        pub division_factor: u8,
+        pub horizontal_penalty_cost_p1: u16,
+        pub horizontal_penalty_cost_p2: u16,
+        pub vertical_penalty_cost_p1: u16,
+        pub vertical_penalty_cost_p2: u16,
+        pub p1_config: P1Config,
+        pub p2_config: P2Config,
     }
 
     impl core::default::Default for CostAggregation {
@@ -3949,13 +4050,13 @@ mod pipeline {
     }
 
     #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
-    struct P1Config {
-        enable_adaptive: bool,
-        default_value: u8,
-        edge_value: u8,
-        smooth_value: u8,
-        edge_threshold: u8,
-        smooth_threshold: u8,
+    pub struct P1Config {
+        pub enable_adaptive: bool,
+        pub default_value: u8,
+        pub edge_value: u8,
+        pub smooth_value: u8,
+        pub edge_threshold: u8,
+        pub smooth_threshold: u8,
     }
 
     impl core::default::Default for P1Config {
@@ -3972,11 +4073,11 @@ mod pipeline {
     }
 
     #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
-    struct P2Config {
-        enable_adaptive: bool,
-        default_value: u8,
-        edge_value: u8,
-        smooth_value: u8,
+    pub struct P2Config {
+        pub enable_adaptive: bool,
+        pub default_value: u8,
+        pub edge_value: u8,
+        pub smooth_value: u8,
     }
 
     impl core::default::Default for P2Config {
@@ -3992,12 +4093,12 @@ mod pipeline {
 
     #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
     pub struct CensusTransform {
-        kernel_size: KernelSize,
-        kernel_mask: u64,
-        enable_mean_mode: bool,
-        threshold: u32,
-        noise_threshold_offset: i8,
-        noise_threshold_scale: i8,
+        pub kernel_size: KernelSize,
+        pub kernel_mask: u64,
+        pub enable_mean_mode: bool,
+        pub threshold: u32,
+        pub noise_threshold_offset: i8,
+        pub noise_threshold_scale: i8,
     }
     
     impl core::default::Default for CensusTransform {
@@ -4023,13 +4124,13 @@ mod pipeline {
     }
 
     #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
-    struct CostMatching {
-        disparity_width: DisparityWidth,
-        enable_companding: bool,
-        invalid_disparity_value: u8,
-        confidence_threshold: u8,
-        enable_software_confidence_thresholding: bool,
-        linear_equation_parameters: LinearEquationParameters,
+    pub struct CostMatching {
+        pub disparity_width: DisparityWidth,
+        pub enable_companding: bool,
+        pub invalid_disparity_value: u8,
+        pub confidence_threshold: u8,
+        pub enable_software_confidence_thresholding: bool,
+        pub linear_equation_parameters: LinearEquationParameters,
     }
     impl core::default::Default for CostMatching {
         fn default() -> Self {
@@ -4045,16 +4146,16 @@ mod pipeline {
     }
 
     #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
-    struct LinearEquationParameters {
-        alpha: u8,
-        beta: u8,
-        threshold: u8,
+    pub struct LinearEquationParameters {
+        pub alpha: u8,
+        pub beta: u8,
+        pub threshold: u8,
     }
     impl core::default::Default for LinearEquationParameters {
         fn default() -> Self {
             Self {
                 alpha: 0,
-                beta: 0,
+                beta: 2,
                 threshold: 127,
             }
         }
@@ -4062,7 +4163,7 @@ mod pipeline {
 
     #[derive(serde_repr::Deserialize_repr, serde_repr::Serialize_repr, Debug, PartialEq)]
     #[repr(u32)]
-    enum DisparityWidth {
+    pub enum DisparityWidth {
         Disparity64 = 0,
         Disparity96 = 1,
     }
@@ -4125,17 +4226,17 @@ mod pipeline {
 
     #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
     pub struct PostProcessing {
-        filtering_order: [Filter; 5],
-        median: MedianFilter,
-        bilateral_sigma_value: i16,
-        spacial_filter: SpatialFilter,
-        temporal_filter: TemporalFilter,
-        threshold_filter: ThresholdFilter,
-        brightness_filter: BrightnessFilter,
-        speckle_filter: SpeckleFilter,
-        decimation_filter: DecimationFilter,
-        hole_filling: HoleFilling,
-        adaptive_median_filter: AdaptiveMedianFilter,
+        pub filtering_order: [Filter; 5],
+        pub median: MedianFilter,
+        pub bilateral_sigma_value: i16,
+        pub spatial_filter: SpatialFilter,
+        pub temporal_filter: TemporalFilter,
+        pub threshold_filter: ThresholdFilter,
+        pub brightness_filter: BrightnessFilter,
+        pub speckle_filter: SpeckleFilter,
+        pub decimation_filter: DecimationFilter,
+        pub hole_filling: HoleFilling,
+        pub adaptive_median_filter: AdaptiveMedianFilter,
     }
     
     impl core::default::Default for PostProcessing {
@@ -4144,7 +4245,7 @@ mod pipeline {
                 filtering_order: [Filter::Median, Filter::Decimation, Filter::Speckle, Filter::Spatial, Filter::Temporal],
                 median: MedianFilter::Off,
                 bilateral_sigma_value: 0,
-                spacial_filter: Default::default(),
+                spatial_filter: Default::default(),
                 temporal_filter: Default::default(),
                 threshold_filter: Default::default(),
                 brightness_filter: Default::default(),
@@ -4177,9 +4278,9 @@ mod pipeline {
     }
 
     #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
-    struct ThresholdFilter {
-        min_range: i32,
-        max_range: i32,
+    pub struct ThresholdFilter {
+        pub min_range: i32,
+        pub max_range: i32,
     }
     
     impl core::default::Default for ThresholdFilter {
@@ -4192,9 +4293,9 @@ mod pipeline {
     }
 
     #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
-    struct BrightnessFilter {
-        min_brightness: i32,
-        max_brightness: i32,
+    pub struct BrightnessFilter {
+        pub min_brightness: i32,
+        pub max_brightness: i32,
     }
 
     impl core::default::Default for BrightnessFilter {
@@ -4207,10 +4308,10 @@ mod pipeline {
     }
 
     #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
-    struct SpeckleFilter {
-        enable: bool,
-        range: u32,
-        difference_threshold: u32,
+    pub struct SpeckleFilter {
+        pub enable: bool,
+        pub range: u32,
+        pub difference_threshold: u32,
     }
     
     impl core::default::Default for SpeckleFilter {
@@ -4224,9 +4325,9 @@ mod pipeline {
     }
 
     #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
-    struct DecimationFilter {
-        decimation_factor: u32,
-        decimation_mode: DecimationMode,
+    pub struct DecimationFilter {
+        pub decimation_factor: u32,
+        pub decimation_mode: DecimationMode,
     }
 
     impl core::default::Default for DecimationFilter {
@@ -4239,12 +4340,12 @@ mod pipeline {
     }
 
     #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
-    struct HoleFilling {
-        enable: bool,
-        high_confidence_threshold: u8,
-        fill_confidence_threshold: u8,
-        min_valid_disparity: u8,
-        invalidate_disparities: bool,
+    pub struct HoleFilling {
+        pub enable: bool,
+        pub high_confidence_threshold: u8,
+        pub fill_confidence_threshold: u8,
+        pub min_valid_disparity: u8,
+        pub invalidate_disparities: bool,
     }
 
     impl core::default::Default for HoleFilling {
@@ -4260,9 +4361,9 @@ mod pipeline {
     }
 
     #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
-    struct AdaptiveMedianFilter {
-        enable: bool,
-        confidence_threshold: u8,
+    pub struct AdaptiveMedianFilter {
+        pub enable: bool,
+        pub confidence_threshold: u8,
     }
 
     impl core::default::Default for AdaptiveMedianFilter {
@@ -4283,11 +4384,11 @@ mod pipeline {
     }
 
     #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
-    struct TemporalFilter {
-        enable: bool,
-        persistency_mode: PersistencyMode,
-        alpha: f32,
-        delta: i32,
+    pub struct TemporalFilter {
+        pub enable: bool,
+        pub persistency_mode: PersistencyMode,
+        pub alpha: f32,
+        pub delta: i32,
     }
 
     impl core::default::Default for TemporalFilter {
@@ -4316,12 +4417,12 @@ mod pipeline {
     }
 
     #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
-    struct SpatialFilter {
-        enable: bool,
-        hole_filling_radius: u8,
-        alpha: f32,
-        delta: i32,
-        num_iterations: i32,
+    pub struct SpatialFilter {
+        pub enable: bool,
+        pub hole_filling_radius: u8,
+        pub alpha: f32,
+        pub delta: i32,
+        pub num_iterations: i32,
     }
     
     impl core::default::Default for SpatialFilter {
@@ -4415,19 +4516,20 @@ mod pipeline {
 
         let cam_right = camera_right.requested_camera_outputs().next().unwrap();
 
-
+        let mut out = pipe.create_node::<XLinkOut>();
         let mut stereo = pipe.create_node::<StereoDepth>();
+
+        let xlink_out = pipe.create_output_queue(stereo.output().disparity, &mut out);
 
         pipe.link(cam_left, stereo.input().left);
         pipe.link(cam_right, stereo.input().right);
 
-        let mut out = pipe.create_node::<XLinkOut>();
 
-        let xlink_out = pipe.create_output_queue(stereo.output().disparity, &mut out);
 
         assert_eq!(pipe.connections.len(), 3);
         assert_eq!(pipe.nodes.len(), 4);
         let schema = pipe.build("DEVICE");
+        //panic!("{schema:?}");
     }
 
     #[test]
@@ -4498,10 +4600,10 @@ mod pipeline {
 
             let mut def = CameraProperties::default();
 
-            def.initial_control.ae_lock_mode = true;
-            def.initial_control.awb_lock_mode = true;
-            def.initial_control.strobe_config.enable = true;
-            def.initial_control.enable_hdr = true;
+            def.initial_control.ae_lock_mode = false;
+            def.initial_control.awb_lock_mode = false;
+            def.initial_control.strobe_config.enable = false;
+            def.initial_control.enable_hdr = false;
             def.board_socket = crate::rpc::CameraBoardSocket::A;
 
 
@@ -4510,7 +4612,7 @@ mod pipeline {
                 fps: Capability::new_none(),
                 ty: None,
                 enable_undistortion: None,
-                isp_output: true,
+                isp_output: false,
                 resize_mode: FrameResize::Crop,
             });
             /*
@@ -4543,89 +4645,120 @@ mod pipeline {
             let ours = vec![185, 23, 185, 7, 185, 12, 1, 2, 136, 0, 0, 122, 68, 1, 0, 0, 1, 10, 5, 0, 190, 0, 185, 11, 186, 5, 3, 1, 2, 4, 5, 0, 0, 185, 5, 0, 2, 136, 0, 0, 0, 63, 3, 1, 185, 4, 0, 3, 136, 205, 204, 204, 62, 3, 185, 2, 0, 134, 255, 255, 0, 0, 185, 2, 0, 133, 255, 0, 185, 3, 0, 50, 2, 185, 2, 1, 0, 185, 5, 1, 128, 210, 128, 200, 1, 1, 185, 2, 1, 128, 200, 185, 6, 255, 0, 1, 0, 1, 1, 185, 6, 1, 0, 0, 55, 0, 185, 3, 0, 0, 127, 185, 7, 1, 128, 250, 129, 244, 1, 128, 250, 129, 244, 1, 185, 6, 1, 11, 10, 22, 15, 5, 185, 4, 1, 33, 22, 63, 185, 6, 20, 4, 1, 8, 2, 0, 2, 255, 1, 0, 190, 190, 190, 190, 1, 185, 5, 189, 0, 189, 0, 190, 16, 16, 0, 3, 255, 255, 1, 190, 1, 190, 190, 190, 190, 190, 190];
             */
 
-            let theirs = vec![185,23,185,7,185,12,1,2,136,0,0,122,68,1,0,1,1,10,5,0,190,0,185,11,186,5,3,1,2,4,5,0,0,185,5,0,2,136,0,0,0,63,3,1,185,4,0,3,136,205,204,204,62,3,185,2,0,134,255,255,0,0,185,2,0,133,0,1,185,3,0,50,2,185,2,1,0,185,5,1,128,210,128,200,1,1,185,2,1,128,200,185,6,255,0,1,0,1,1,185,6,1,0,0,55,0,185,3,0,2,127,185,7,1,128,250,129,244,1,128,250,129,244,1,185,6,1,11,10,22,15,5,185,4,1,33,22,63,185,6,20,4,1,8,2,0,2,255,1,0,190,190,190,190,1,185,5,189,0,189,0,190,16,16,0,3,255,255,1,190,1,190,190,190,190,190,190];
+            //let theirs = vec![185,23,185,7,185,12,1,2,136,0,0,122,68,1,0,1,1,10,5,0,190,0,185,11,186,5,3,1,2,4,5,0,0,185,5,0,2,136,0,0,0,63,3,1,185,4,0,3,136,205,204,204,62,3,185,2,0,134,255,255,0,0,185,2,0,133,0,1,185,3,0,50,2,185,2,1,0,185,5,1,128,210,128,200,1,1,185,2,1,128,200,185,6,255,0,1,0,1,1,185,6,1,0,0,55,0,185,3,0,2,127,185,7,1,128,250,129,244,1,128,250,129,244,1,185,6,1,11,10,22,15,5,185,4,1,33,22,63,185,6,20,4,1,8,2,0,2,255,1,0,190,190,190,190,1,185,5,189,0,189,0,190,16,16,0,3,255,255,1,190,1,190,190,190,190,190,190];
+            let theirs = vec![185,23,185,7,185,12,1,2,136,0,0,122,68,1,0,0,0,10,3,0,190,0,185,11,186,5,1,3,2,4,5,7,0,185,5,1,1,136,0,0,0,63,3,1,185,4,1,3,136,0,0,0,63,3,185,2,0,133,152,58,185,2,0,133,0,1,185,3,1,128,200,2,185,2,2,0,185,5,1,100,128,210,3,1,185,2,1,128,200,185,6,255,0,1,0,1,1,185,6,1,0,0,15,0,185,3,0,2,127,185,7,1,128,250,129,244,1,128,250,129,244,1,185,6,1,45,40,49,15,5,185,4,1,95,90,99,185,6,20,10,1,2,5,0,2,255,1,0,190,190,190,190,1,185,5,189,0,189,0,190,16,16,0,3,3,3,1,190,1,190,190,190,190,190,190];
+            let their_val = rnop::Value::parse(&theirs).unwrap();
 
             let old = RnopDeserializer::deserialize::<StereoDepthProperties>(&theirs).unwrap();
 
             let mut props = StereoDepthProperties::default();
-            //props.initial_config.algorithm_control.enable_extended = false;
-            props.initial_config.algorithm_control.enable_left_right_check = false;
-            props.initial_config.algorithm_control.enable_software_left_right_check = true;
+            props.initial_config.algorithm_control.enable_extended = false;
+            props.initial_config.algorithm_control.enable_left_right_check = true;
+            props.initial_config.algorithm_control.enable_software_left_right_check = false;
             props.initial_config.algorithm_control.enable_subpixel = false;
-            props.initial_config.post_processing.spacial_filter.enable = true;
-            props.initial_config.post_processing.temporal_filter.enable = true;
-            props.initial_config.post_processing.speckle_filter.enable = true;
-            props.initial_config.post_processing.hole_filling.enable = false;
-            props.initial_config.post_processing.hole_filling.invalidate_disparities = false;
-            props.initial_config.post_processing.adaptive_median_filter.enable = false;
+            props.initial_config.algorithm_control.subpixel_fractional_bits = 3;
+            props.initial_config.post_processing.spatial_filter.enable = false;
+            props.initial_config.post_processing.temporal_filter.enable = false;
+            props.initial_config.post_processing.speckle_filter.enable = false;
+            props.initial_config.post_processing.hole_filling.enable = true;
+            props.initial_config.post_processing.hole_filling.invalidate_disparities = true;
+            props.initial_config.post_processing.adaptive_median_filter.enable = true;
+            props.initial_config.census_transform.enable_mean_mode = true;
 
-            assert_eq!(props.initial_config.post_processing, old.initial_config.post_processing);
+            props.initial_config.cost_matching.enable_companding = false;
+            props.initial_config.cost_matching.enable_software_confidence_thresholding = false;
+
+            props.initial_config.cost_aggregation.p1_config.enable_adaptive = true;
+            props.initial_config.cost_aggregation.p2_config.enable_adaptive = true;
+
+            props.initial_config.confidence_metrics.flatness_override = false;
+
+            props.enable_rectification = true;
+            props.enable_runtime_stereo_mode_switch = false;
+            props.keep_aspect_ratio = true;
+            props.focal_length_from_calibration = true;
+            props.enable_frame_sync = true;
+
+            props.initial_config.post_processing.filtering_order = [Filter::Decimation, Filter::Median, Filter::Speckle, Filter::Spatial, Filter::Temporal];
+            props.initial_config.post_processing.median = MedianFilter::Kernel7x7;
+            props.initial_config.post_processing.spatial_filter.enable = true;
+            props.initial_config.post_processing.spatial_filter.hole_filling_radius = 1;
+            props.initial_config.post_processing.temporal_filter.enable = true;
+            props.initial_config.post_processing.temporal_filter.alpha = 0.5;
+            props.initial_config.post_processing.threshold_filter.max_range = 15000;
+            props.initial_config.post_processing.speckle_filter.enable = true;
+            props.initial_config.post_processing.speckle_filter.range = 200;
+            props.initial_config.post_processing.decimation_filter.decimation_factor = 2;
+            props.initial_config.post_processing.hole_filling.high_confidence_threshold = 100;
+            props.initial_config.post_processing.hole_filling.fill_confidence_threshold = 210;
+            props.initial_config.post_processing.hole_filling.min_valid_disparity = 3;
+
+            props.initial_config.cost_matching.confidence_threshold = 15;
+
+            props.initial_config.cost_aggregation.p1_config.default_value = 45;
+            props.initial_config.cost_aggregation.p1_config.edge_value = 40;
+            props.initial_config.cost_aggregation.p1_config.smooth_value = 49;
+
+            props.initial_config.cost_aggregation.p2_config.default_value = 95;
+            props.initial_config.cost_aggregation.p2_config.edge_value = 90;
+            props.initial_config.cost_aggregation.p2_config.smooth_value = 99;
+
+            props.initial_config.confidence_metrics.motion_vector_confidence_weight = 10;
+            props.initial_config.confidence_metrics.flatness_confidence_weight = 2;
+            props.initial_config.confidence_metrics.flatness_confidence_threshold = 5;
+
+            props.post_processing_shaves = 3;
+            props.post_processing_memory_slices = 3;
+
+            assert_eq!(props.initial_config, old.initial_config);
+
+            //let mut w = vec![];
+
+            //RnopSerializer::serialize(&props, &mut w).unwrap();
+
+            let val = rnop::to_value(&props).unwrap();
+            assert_eq!(val, their_val);
+
+            let mut w = vec![];
+            RnopSerializer::serialize(&props, &mut w).unwrap();
+
+            assert_eq!(w, theirs, "{val:?}");
+
 
             // right camera
-            let cam_1 = vec![185,22,185,33,0,3,0,136,0,0,0,0,0,0,185,3,0,0,0,185,5,129,16,15,129,228,125,129,86,91,0,3,185,5,0,0,129,102,111,118,0,0,0,0,0,0,0,0,0,0,185,3,0,0,0,185,3,0,0,0,0,0,0,132,129,2,0,0,0,0,80,84,0,186,0,2,255,189,0,255,255,255,255,255,136,0,0,128,191,136,0,0,128,191,0,3,134,0,0,160,0,3,134,0,0,160,0,4,4,4,190,190,186,1,185,6,185,1,184,0,186,2,129,128,7,129,176,4,185,1,190,190,0,190,0];
+            //let cam_1 = vec![185,22,185,33,0,3,0,136,0,0,0,0,0,0,185,3,0,0,0,185,5,129,16,15,129,228,125,129,86,91,0,3,185,5,0,0,129,102,111,118,0,0,0,0,0,0,0,0,0,0,185,3,0,0,0,185,3,0,0,0,0,0,0,132,129,2,0,0,0,0,80,84,0,186,0,2,255,189,0,255,255,255,255,255,136,0,0,128,191,136,0,0,128,191,0,3,134,0,0,160,0,3,134,0,0,160,0,4,4,4,190,190,186,1,185,6,185,1,184,0,186,2,129,128,7,129,176,4,185,1,190,190,0,190,0];
+            //let cam_1 = vec![185,22,185,33,0,3,0,136,0,0,0,0,0,0,185,3,0,0,0,185,5,129,48,175,129,127,242,129,15,91,0,3,185,5,0,0,129,102,111,118,0,0,0,0,0,0,0,0,0,0,185,3,0,0,0,185,3,0,0,0,0,0,0,132,129,2,0,0,0,0,128,176,128,244,0,186,0,2,255,189,0,255,255,255,255,255,136,0,0,128,191,136,0,0,128,191,0,3,134,0,0,160,0,3,134,0,0,160,0,4,4,4,190,190,186,1,185,6,185,1,184,0,186,2,129,128,2,129,144,1,185,1,190,190,0,190,0];
+            let cam_1 = vec![185,22,185,33,0,3,0,136,0,0,0,0,0,0,185,3,0,0,0,185,5,129,48,63,129,10,151,129,124,93,0,3,185,5,0,0,129,102,111,118,0,0,0,0,0,0,0,0,0,0,185,3,0,0,0,185,3,0,0,0,0,0,0,132,129,2,0,0,0,0,128,176,128,132,0,186,0,2,255,189,0,255,255,255,255,255,136,0,0,128,191,136,0,0,128,191,0,3,134,0,0,160,0,3,134,0,0,160,0,4,4,4,190,190,186,1,185,6,185,1,184,0,186,2,129,128,2,129,144,1,185,1,190,190,0,190,0];
 
             let right = RnopDeserializer::deserialize::<CameraProperties>(&cam_1).unwrap();
 
             let mut cam_r = CameraProperties::default();
-            cam_r.initial_control.ae_region.x = 3856;
-            cam_r.initial_control.ae_region.y = 32228;
-            cam_r.initial_control.ae_region.width = 23382;
+            // x: 16176, y: 38666, width: 23932, height: 0, priority: 3
+            cam_r.initial_control.ae_region.x = 16176;
+            cam_r.initial_control.ae_region.y = 38666;
+            cam_r.initial_control.ae_region.width = 23932;
             cam_r.initial_control.ae_region.height = 0;
             cam_r.initial_control.ae_region.priority = 3;
 
+            // x: 0, y: 0, width: 28518, height: 118, priority: 0
             cam_r.initial_control.af_region.width = 28518;
             cam_r.initial_control.af_region.height = 118;
 
-            cam_r.initial_control.ae_lock_mode = true;
-            cam_r.initial_control.awb_lock_mode = true;
+            cam_r.initial_control.ae_lock_mode = false;
+            cam_r.initial_control.awb_lock_mode = false;
 
-            cam_r.initial_control.strobe_config.enable = true;
+            cam_r.initial_control.strobe_config.enable = false;
             cam_r.initial_control.contrast = -127;
             cam_r.initial_control.saturation = 2;
-            cam_r.initial_control.low_power_frame_burst = 80;
-            cam_r.initial_control.low_power_frame_discard = 84;
-            cam_r.initial_control.enable_hdr = true;
+            // low_power_frame_burst: 176, low_power_frame_discard: 132
+            cam_r.initial_control.low_power_frame_burst = 176;
+            cam_r.initial_control.low_power_frame_discard = 132;
+            cam_r.initial_control.enable_hdr = false;
 
             cam_r.board_socket = crate::rpc::CameraBoardSocket::C;
 
             cam_r.output_requests.push(CameraCapability {
-                size: Capability::new_single((1920, 1200)),
-                fps: Capability::new_none(),
-                ty: None,
-                enable_undistortion: None,
-                isp_output: true,
-                resize_mode: FrameResize::Crop,
-            });
-
-            assert_eq!(cam_r, right);
-
-            // left cam
-
-
-            let cam_2 = vec![185,22,185,33,0,3,0,136,0,0,0,0,0,0,185,3,0,0,0,185,5,0,0,0,0,0,185,5,129,45,19,0,0,0,129,45,19,0,0,0,0,0,0,128,250,128,165,9,185,3,0,0,0,185,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,186,0,1,255,189,0,255,255,255,255,255,136,0,0,128,191,136,0,0,128,191,0,3,134,0,0,160,0,3,134,0,0,160,0,4,4,4,190,190,186,1,185,6,185,1,184,0,186,2,129,128,7,129,176,4,185,1,190,190,0,190,0];
-            let val = rnop::Value::parse(&cam_2);
-            panic!("{val:?}");
-
-            let left = RnopDeserializer::deserialize::<CameraProperties>(&cam_2).unwrap();
-
-            let mut cam_l = CameraProperties::default();
-            cam_l.initial_control.af_region.x = 4909;
-            cam_l.initial_control.af_region.priority = 4909;
-
-            cam_l.initial_control.ae_lock_mode = true;
-            cam_l.initial_control.awb_lock_mode = true;
-
-            cam_l.initial_control.strobe_config.enable = true;
-            //cam_l.initial_control.contrast = -127;
-            //cam_l.initial_control.saturation = 2;
-            //cam_l.initial_control.low_power_frame_burst = 80;
-            //cam_l.initial_control.low_power_frame_discard = 84;
-            //cam_l.initial_control.enable_hdr = true;
-
-            cam_l.board_socket = crate::rpc::CameraBoardSocket::B;
-
-            cam_l.output_requests.push(CameraCapability {
-                size: Capability::new_single((1920, 1200)),
+                size: Capability::new_single((640, 400)),
                 fps: Capability::new_none(),
                 ty: None,
                 enable_undistortion: None,
@@ -4633,7 +4766,55 @@ mod pipeline {
                 resize_mode: FrameResize::Crop,
             });
 
-            //assert_eq!(cam_l, left);
+            assert_eq!(cam_r, right);
+            let mut w = vec![];
+            RnopSerializer::serialize(&cam_r, &mut w);
+            assert_eq!(cam_1, w);
+
+            // left cam
+
+
+            //let cam_2 = vec![185,22,185,33,0,3,0,136,0,0,0,0,0,0,185,3,0,0,0,185,5,0,0,0,0,0,185,5,129,81,46,0,0,0,129,81,46,0,0,0,0,0,0,114,128,238,23,185,3,0,0,0,185,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,186,0,1,255,189,0,255,255,255,255,255,136,0,0,128,191,136,0,0,128,191,0,3,134,0,0,160,0,3,134,0,0,160,0,4,4,4,190,190,186,1,185,6,185,1,184,0,186,2,129,128,2,129,144,1,185,1,190,190,0,190,0];
+            //let cam_2 = vec![185,22,185,33,0,3,0,136,0,0,0,0,0,0,185,3,0,0,0,185,5,0,0,0,0,0,185,5,129,45,19,0,0,0,129,45,19,0,0,0,0,0,0,128,250,128,165,9,185,3,0,0,0,185,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,186,0,1,255,189,0,255,255,255,255,255,136,0,0,128,191,136,0,0,128,191,0,3,134,0,0,160,0,3,134,0,0,160,0,4,4,4,190,190,186,1,185,6,185,1,184,0,186,2,129,128,7,129,176,4,185,1,190,190,0,190,0];
+            //let cam_2 = vec![185,22,185,33,0,3,0,136,0,0,0,0,0,0,185,3,0,0,0,185,5,0,0,0,0,0,185,5,129,47,35,0,0,0,129,47,35,0,0,0,0,0,0,128,231,128,239,17,185,3,0,0,0,185,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,186,0,1,255,189,0,255,255,255,255,255,136,0,0,128,191,136,0,0,128,191,0,3,134,0,0,160,0,3,134,0,0,160,0,4,4,4,190,190,186,1,185,6,185,1,184,0,186,2,129,128,2,129,144,1,185,1,190,190,0,190,0];
+            let cam_2 = vec![185,22,185,33,0,3,0,136,0,0,0,0,0,0,185,3,0,0,0,185,5,0,0,0,0,0,185,5,129,182,48,0,0,0,129,182,48,0,0,0,0,0,0,128,132,60,25,185,3,0,0,0,185,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,186,0,1,255,189,0,255,255,255,255,255,136,0,0,128,191,136,0,0,128,191,0,3,134,0,0,160,0,3,134,0,0,160,0,4,4,4,190,190,186,1,185,6,185,1,184,0,186,2,129,128,2,129,144,1,185,1,190,190,0,190,0];
+            let val = rnop::Value::parse(&cam_2);
+            //panic!("{val:?}");
+
+            let left = RnopDeserializer::deserialize::<CameraProperties>(&cam_2).unwrap();
+            //panic!("{val:?}");
+
+            let mut cam_l = CameraProperties::default();
+            // x: 12470, y: 0, width: 0, height: 0, priority: 12470
+            cam_l.initial_control.af_region.x = 12470;
+            cam_l.initial_control.af_region.priority = 12470;
+
+            cam_l.initial_control.ae_lock_mode = false;
+            cam_l.initial_control.awb_lock_mode = false;
+
+
+            cam_l.initial_control.strobe_config.enable = false;
+            // control_mode: 132, effect_mode: 60, frame_sync_mode: 25
+            cam_l.initial_control.control_mode = 132;
+            cam_l.initial_control.effect_mode = 60;
+            cam_l.initial_control.frame_sync_mode = 25;
+            cam_l.initial_control.enable_hdr = false;
+
+            cam_l.board_socket = crate::rpc::CameraBoardSocket::B;
+
+            cam_l.output_requests.push(CameraCapability {
+                size: Capability::new_single((640, 400)),
+                fps: Capability::new_none(),
+                ty: None,
+                enable_undistortion: None,
+                isp_output: false,
+                resize_mode: FrameResize::Crop,
+            });
+
+            assert_eq!(cam_l, left);
+            let mut w = vec![];
+            RnopSerializer::serialize(&cam_l, &mut w);
+            assert_eq!(cam_2, w);
         }
     }
 
@@ -5441,4 +5622,27 @@ mod rpc {
         SReceiver = 3,
     }
     // end of pipeline
+}
+
+pub mod logger {
+    pub struct Logger(pub(crate) crate::ConnectionStream);
+
+    #[derive(serde::Deserialize, Debug)]
+    pub struct LogMessage {
+        node_id_name: String,
+        log_level: crate::rpc::LogLevel,
+        time: crate::pipeline::Timestamp,
+        color_range_start: u32,
+        color_range_end: u32,
+        payload: String,
+    }
+
+    impl Logger {
+        pub async fn read(&mut self) -> Vec<LogMessage> {
+            let bytes = self.0.read().await;
+
+            use crate::pipeline::{Deserialize, Deserializer};
+            crate::pipeline::RnopDeserializer::deserialize::<Vec<LogMessage>>(&bytes).unwrap()
+        }
+    }
 }
