@@ -522,6 +522,7 @@ async fn main() {
             let mut pipe = pipeline::Pipeline::new();
             let mut camera_left = pipe.create_node::<pipeline::Camera>();
             let cam_l = camera_left.properties_mut();
+            /*
             {
                 // TODO: figure out how exactly these regions are being changed
                 //      - they seem to differ every time its ran
@@ -540,9 +541,9 @@ async fn main() {
                 cam_l.initial_control.effect_mode = 146;
                 cam_l.initial_control.frame_sync_mode = 35;
                 cam_l.initial_control.enable_hdr = false;
-
-                cam_l.board_socket = crate::rpc::CameraBoardSocket::B;
             }
+            */
+            cam_l.board_socket = crate::rpc::CameraBoardSocket::B;
 
             camera_left.request_output(pipeline::CameraCapability {
                 size: pipeline::Capability::new_single(CAMERA_SIZE),
@@ -557,6 +558,7 @@ async fn main() {
 
             let mut camera_right = pipe.create_node::<pipeline::Camera>();
             let cam_r = camera_right.properties_mut();
+            /*
             {
                 cam_r.initial_control.ae_region.x = 48944;
                 cam_r.initial_control.ae_region.y = 31727;
@@ -579,8 +581,9 @@ async fn main() {
                 cam_r.initial_control.low_power_frame_discard = 4;
                 cam_r.initial_control.enable_hdr = false;
 
-                cam_r.board_socket = crate::rpc::CameraBoardSocket::C;
             }
+            */
+            cam_r.board_socket = crate::rpc::CameraBoardSocket::C;
 
             camera_right.request_output(pipeline::CameraCapability {
                 size: pipeline::Capability::new_single(CAMERA_SIZE),
@@ -598,6 +601,7 @@ async fn main() {
 
             let props = stereo.properties_mut();
 
+            /*
             {
                 use crate::pipeline::Filter;
                 props.initial_config.algorithm_control.enable_extended = false;
@@ -662,6 +666,7 @@ async fn main() {
                 props.post_processing_shaves = 3;
                 props.post_processing_memory_slices = 3;
             }
+            */
 
             pipe.link(cam_left, stereo.input().left);
             pipe.link(cam_right, stereo.input().right);
@@ -681,6 +686,8 @@ async fn main() {
                 resize_mode: pipeline::FrameResize::Crop,
             });
             let color_cam = color.requested_camera_outputs().next().unwrap();
+
+            // TODO: go back to the schema for the imagealign example and compare
 
             let mut align = pipe.create_node::<pipeline::ImageAlign>();
 
@@ -1154,15 +1161,263 @@ async fn main() {
             (pipe.build(DEVICE_ID), xlink_out)
         }
 
+        fn pcl_rgb_imu_pipeline() -> (rpc::PipelineSchema, pipeline::OutputQueue<pipeline::CameraFrame, pipeline::RnopDeserializer, pipeline::queue_state::Pending>, /*pipeline::OutputQueue<pipeline::PipelineEvent, pipeline::RnopDeserializer, pipeline::queue_state::Pending>*/) {
+            const CAMERA_SIZE: (u32, u32) = (1280, 720);
+            const CAMERA_FPS: f32 = 30.;
+
+            let mut pipe = pipeline::Pipeline::new();
+
+
+
+            // COLOR INPUT START
+
+            let mut color = pipe.create_node::<pipeline::Camera>();
+
+            {
+                color.properties_mut().board_socket = crate::rpc::CameraBoardSocket::A;
+            }
+
+            color.request_output(pipeline::CameraCapability {
+                size: pipeline::Capability::new_single(CAMERA_SIZE),
+                fps: pipeline::Capability::new_single(CAMERA_FPS),
+                ty: Some(pipeline::FrameType::Nv12),
+                enable_undistortion: None,
+                isp_output: false,
+                resize_mode: pipeline::FrameResize::Crop,
+            });
+            let color_cam = color.requested_camera_outputs().next().unwrap();
+
+            /*
+            let mut enc = pipe.create_node::<pipeline::VideoEncoder>();
+
+            let mut props = enc.properties_mut();
+
+            {
+                props.profile = pipeline::EncoderProfile::H265Main;
+                props.rate_ctrl_mode = pipeline::RateControlMode::Vbr;
+            }
+            pipe.link(color_cam.clone(), enc.input());
+            */
+
+            // COLOR INPUT END
+
+            // STEREO INPUT START
+
+            let mut camera_left = pipe.create_node::<pipeline::Camera>();
+            let cam_l = camera_left.properties_mut();
+            {
+                // TODO: figure out how exactly these regions are being changed
+                //      - they seem to differ every time its ran
+                //      - maybe from querying the device?
+                cam_l.initial_control.af_region.x = 17586;
+                cam_l.initial_control.af_region.priority = 17586;
+
+                cam_l.initial_control.ae_lock_mode = false;
+                cam_l.initial_control.awb_lock_mode = false;
+
+
+                cam_l.initial_control.strobe_config.enable = false;
+                // control_mode: 132, effect_mode: 60, frame_sync_mode: 25
+                // control_mode: 27, effect_mode: 146, frame_sync_mode: 35
+                cam_l.initial_control.control_mode = 27;
+                cam_l.initial_control.effect_mode = 146;
+                cam_l.initial_control.frame_sync_mode = 35;
+                cam_l.initial_control.enable_hdr = false;
+
+                cam_l.board_socket = crate::rpc::CameraBoardSocket::B;
+            }
+
+            camera_left.request_output(pipeline::CameraCapability {
+                size: pipeline::Capability::new_single(CAMERA_SIZE),
+                fps: pipeline::Capability::new_single(CAMERA_FPS),
+                ty: None,
+                enable_undistortion: None,
+                isp_output: false,
+                resize_mode: pipeline::FrameResize::Crop,
+            });
+
+            let cam_left = camera_left.requested_camera_outputs().next().unwrap();
+
+            let mut camera_right = pipe.create_node::<pipeline::Camera>();
+            let cam_r = camera_right.properties_mut();
+            {
+                cam_r.initial_control.ae_region.x = 48944;
+                cam_r.initial_control.ae_region.y = 31727;
+                cam_r.initial_control.ae_region.width = 24153;
+                cam_r.initial_control.ae_region.height = 0;
+                cam_r.initial_control.ae_region.priority = 3;
+
+                // x: 0, y: 0, width: 28518, height: 118, priority: 0
+                cam_r.initial_control.af_region.width = 28518;
+                cam_r.initial_control.af_region.height = 118;
+
+                cam_r.initial_control.ae_lock_mode = false;
+                cam_r.initial_control.awb_lock_mode = false;
+
+                cam_r.initial_control.strobe_config.enable = false;
+                cam_r.initial_control.contrast = -127;
+                cam_r.initial_control.saturation = 2;
+                // low_power_frame_burst: 176, low_power_frame_discard: 132
+                cam_r.initial_control.low_power_frame_burst = 176;
+                cam_r.initial_control.low_power_frame_discard = 4;
+                cam_r.initial_control.enable_hdr = false;
+
+                cam_r.board_socket = crate::rpc::CameraBoardSocket::C;
+            }
+
+            camera_right.request_output(pipeline::CameraCapability {
+                size: pipeline::Capability::new_single(CAMERA_SIZE),
+                fps: pipeline::Capability::new_single(CAMERA_FPS),
+                ty: None,
+                enable_undistortion: None,
+                isp_output: false,
+                resize_mode: pipeline::FrameResize::Crop,
+            });
+
+            let cam_right = camera_right.requested_camera_outputs().next().unwrap();
+
+
+            let mut stereo = pipe.create_node::<pipeline::StereoDepth>();
+
+            let props = stereo.properties_mut();
+
+            {
+                use crate::pipeline::Filter;
+                props.initial_config.algorithm_control.enable_extended = false;
+                props.initial_config.algorithm_control.enable_left_right_check = true;
+                props.initial_config.algorithm_control.enable_software_left_right_check = false;
+                props.initial_config.algorithm_control.enable_subpixel = false;
+                props.initial_config.algorithm_control.subpixel_fractional_bits = 3;
+
+                props.initial_config.algorithm_control.depth_align = pipeline::DepthAlign::Center;
+
+
+                props.initial_config.post_processing.spatial_filter.enable = false;
+                props.initial_config.post_processing.temporal_filter.enable = false;
+                props.initial_config.post_processing.speckle_filter.enable = false;
+                props.initial_config.post_processing.hole_filling.enable = true;
+                props.initial_config.post_processing.hole_filling.invalidate_disparities = true;
+                props.initial_config.post_processing.adaptive_median_filter.enable = true;
+                props.initial_config.census_transform.enable_mean_mode = true;
+
+                props.initial_config.cost_matching.enable_companding = false;
+                props.initial_config.cost_matching.enable_software_confidence_thresholding = false;
+
+                props.initial_config.cost_aggregation.p1_config.enable_adaptive = true;
+                props.initial_config.cost_aggregation.p2_config.enable_adaptive = true;
+
+                props.initial_config.confidence_metrics.flatness_override = false;
+
+                props.enable_rectification = true;
+                props.enable_runtime_stereo_mode_switch = false;
+                props.keep_aspect_ratio = true;
+                props.focal_length_from_calibration = true;
+                props.enable_frame_sync = true;
+
+                props.initial_config.post_processing.filtering_order = [Filter::Decimation, Filter::Median, Filter::Speckle, Filter::Spatial, Filter::Temporal];
+                props.initial_config.post_processing.median = pipeline::MedianFilter::Kernel7x7;
+                props.initial_config.post_processing.spatial_filter.enable = true;
+                props.initial_config.post_processing.spatial_filter.hole_filling_radius = 1;
+                props.initial_config.post_processing.temporal_filter.enable = true;
+                props.initial_config.post_processing.temporal_filter.alpha = 0.5;
+                props.initial_config.post_processing.threshold_filter.max_range = 15000;
+                props.initial_config.post_processing.speckle_filter.enable = true;
+                props.initial_config.post_processing.speckle_filter.range = 200;
+                props.initial_config.post_processing.decimation_filter.decimation_factor = 2;
+                props.initial_config.post_processing.hole_filling.high_confidence_threshold = 100;
+                props.initial_config.post_processing.hole_filling.fill_confidence_threshold = 210;
+                props.initial_config.post_processing.hole_filling.min_valid_disparity = 3;
+
+                props.initial_config.cost_matching.confidence_threshold = 15;
+
+                props.initial_config.cost_aggregation.p1_config.default_value = 45;
+                props.initial_config.cost_aggregation.p1_config.edge_value = 40;
+                props.initial_config.cost_aggregation.p1_config.smooth_value = 49;
+
+                props.initial_config.cost_aggregation.p2_config.default_value = 95;
+                props.initial_config.cost_aggregation.p2_config.edge_value = 90;
+                props.initial_config.cost_aggregation.p2_config.smooth_value = 99;
+
+                props.initial_config.confidence_metrics.motion_vector_confidence_weight = 10;
+                props.initial_config.confidence_metrics.flatness_confidence_weight = 2;
+                props.initial_config.confidence_metrics.flatness_confidence_threshold = 5;
+
+                props.post_processing_shaves = 3;
+                props.post_processing_memory_slices = 3;
+            }
+
+            pipe.link(cam_left, stereo.input().left);
+            pipe.link(cam_right, stereo.input().right);
+
+            // its an issue with image align ?
+            //let mut align = pipe.create_debug_node::<pipeline::ImageAlign>();
+            let mut align = pipe.create_node::<pipeline::ImageAlign>();
+
+
+            align.properties_mut().num_frames_pool = 8;
+            align.properties_mut().num_shaves = 4;
+
+            pipe.link(stereo.output().depth, align.input().input);
+            pipe.link(color_cam.clone(), align.input().align_to);
+
+            /*
+            let mut pointcloud = pipe.create_node::<pipeline::Pointcloud>();
+            pipe.link(align.output().aligned, pointcloud.input().1);
+            */
+
+            // STEREO INPUT END
+
+            /*
+            let group = pipeline::MsgGroup::new()
+                                    .with_msg(color_cam.clone(), "rgb")
+                                    //.with_msg(imu.output(), "imu")
+                                    //.with_msg(pointcloud.output().0, "pcl")
+                                    //.with_msg(align.output().aligned, "depth")
+                                    ;
+
+            let sync = pipe.create_sync_node(group);
+            sync.register(&mut pipe);
+            */
+
+            let mut out = pipe.create_node::<pipeline::XLinkOut>();
+            let mut debug = pipe.create_node::<pipeline::XLinkOut>(); 
+
+            let xlink_out = pipe.create_output_queue(color_cam, &mut out);
+            //let debug_out = pipe.create_output_queue(align.debug_out(), &mut debug);
+
+            (pipe.build(DEVICE_ID), xlink_out, /*debug_out*/)
+        }
+
+        fn debug_pipeline() -> (rpc::PipelineSchema, pipeline::OutputQueue<pipeline::PipelineEvent, pipeline::RnopDeserializer, pipeline::queue_state::Pending>) {
+            let mut pipe = pipeline::Pipeline::new();
+            let mut imu = pipe.create_debug_node::<pipeline::Imu>();
+
+
+            imu.properties_mut().enable_sensor(pipeline::ImuSensorKind::Accelerometer, 400);
+            imu.properties_mut().enable_sensor(pipeline::ImuSensorKind::GyroscopeCalibrated, 400);
+
+
+            let mut out = pipe.create_node::<pipeline::XLinkOut>();
+
+            let xlink_out = pipe.create_output_queue(imu.debug_out(), &mut out);
+            (pipe.build(DEVICE_ID), xlink_out)
+        }
+
+        let r = rpc.set_log_level(LogLevel::Off).await;
+        println!("log level {r:?}");
+
         //let (schema, out) = stereo_pipeline();
         //let (schema, out1, out2) = camera_pipeline_dynamic();
-        //let (schema, depth_out, color_out) = rgbd_pipeline();
+        let (schema, depth, color) = rgbd_pipeline();
         //let (schema, out) = pointcloud_pipeline();
         //let (schema, out) = manip_pipeline();
         //let (schema, depth, color) = encoded_rgbd_pipeline();
-        let (schema, out) = sync_pipeline();
+        //let (schema, out, /*debug*/) = pcl_rgb_imu_pipeline();
+        //let (schema, out) = encoding_pipeline();
+        //let (schema, out) = debug_pipeline();
 
         //connection.create_stream("__x_0_out", bootloader::MAX_PACKET_SIZE).await.unwrap();
+
 
         let ret = rpc.set_pipeline_schema(schema).await;
         println!("{ret:?}");
@@ -1176,14 +1431,12 @@ async fn main() {
         let ret = rpc.start_pipeline().await;
         println!("{ret:?}");
 
-        /*
         let mut depth_queue = connection.wait_for_output_queue(depth).await;
         let mut color_queue = connection.wait_for_output_queue(color).await;
-        */
-
 
         //println!("out: {out:?}");
-        let mut queue = connection.wait_for_output_queue(out).await;
+        //let mut queue = connection.wait_for_output_queue(out).await;
+        //let mut debug = connection.wait_for_output_queue(debug).await;
         /*
         let mut depth_queue = connection.wait_for_output_queue(depth_out).await;
         let mut color_queue = connection.wait_for_output_queue(color_out).await;
@@ -1194,11 +1447,13 @@ async fn main() {
 
         use opencv::highgui;
 
+        /*
         let colored_window = "disparity color";
         highgui::named_window(colored_window, highgui::WINDOW_AUTOSIZE);
 
         let window = "disparity";
         highgui::named_window(window, highgui::WINDOW_AUTOSIZE);
+        */
 
         let mut max_disparity = 0.;
 
@@ -1206,9 +1461,9 @@ async fn main() {
             tokio::select! {
                 msgs = logger.read() => {
                     for msg in msgs {
-                        //if matches!(msg.log_level, LogLevel::Error | LogLevel::Warn | LogLevel::Critical | LogLevel::Info) {
+                        if matches!(msg.log_level, LogLevel::Error | LogLevel::Warn | LogLevel::Critical | LogLevel::Info) {
                             println!("logger: {msg:?}");
-                        //}
+                        }
                     }
                 }
                 /*
@@ -1223,10 +1478,29 @@ async fn main() {
                     println!("color recv");
                 }
                 */
+                /*
+                res = debug.read_raw() => {
+                    println!("{res:?}");
+                }
+                */
+                /*
+                res = queue.read_raw() => {
+                    let res = res.unwrap();
+                    //println!("\nread: {} {} {:?}\n", res.metadata.len(), res.buffer.len(), res.ty);
+                }
+                */
+                color = color_queue.read() => {
+                    println!("color");
+                }
+                depth = depth_queue.read() => {
+                    println!("depth");
+                }
+                /*
                 res = queue.read() => {
                     let res = res.unwrap();
                     println!("{res:?}");
                 }
+                */
                 /*
                 res = queue.read_raw() => {
                     /*
@@ -2496,6 +2770,8 @@ async fn io_thread(mut stream: tokio::net::TcpStream, io_evs: mpsc::Sender<IoEve
                     panic!("unknown event ty");
                 };
 
+                //println!("recv: {header:?}");
+
                 match ty {
                     EventType::CreateStreamReq => {
                         let ev = Event::acknowledge_stream(header.stream_id, &header.name, header.size, header.id);
@@ -2773,14 +3049,12 @@ mod pipeline {
     }
 
     impl Deserializer for RnopDeserializer {
-        type Error = ();
+        type Error = rnop::serde::de::Error;
         fn deserialize<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T, Self::Error> {
-            let value = rnop::Value::parse(bytes).unwrap();
-            // FIXME: for some reason deserializing single field structs does not work, issue with the lib
-            Ok(rnop::from_value::<T>(value).unwrap())
+            let value = rnop::Value::parse(bytes).ok_or(rnop::serde::de::Error::Other)?;
+            Ok(rnop::from_value::<T>(value)?)
         }
     }
-
     struct MsgpackDeserializer;
     struct MsgpackSerializer;
 
@@ -2816,19 +3090,19 @@ mod pipeline {
 
     //TODO: having a generic way to have &mut refs to nodes with and without debug
 
-    struct Debug<T> {
+    pub struct Debug<T> {
         inner: T,
     }
 
     #[derive(Default)]
-    struct PipelineEventOutput {
+    pub struct PipelineEventOutput {
         inner: Output<PipelineEvent, RnopDeserializer>,
     }
 
     impl MetadataOnly for PipelineEvent {}
 
     #[derive(serde::Deserialize)]
-    struct PipelineEvent {
+    pub struct PipelineEvent {
 
     }
 
@@ -2849,7 +3123,7 @@ mod pipeline {
 
     impl IoRegister for PipelineEventOutput {
         fn register<'a, 'b>(&'a self, info: &mut IoInfo<'a, 'b>) {
-            todo!()
+            self.inner.register(info)
         }
     }
 
@@ -2859,6 +3133,11 @@ mod pipeline {
             self.1.outputs(node)
         }
     }
+
+    /*
+    impl <D: Deserializer> IoDeserializeable<D> for PipelineEventOutput {
+    }
+    */
 
     impl <I1: Inputs, I2: Inputs> Inputs for (I1, I2) {
         type Inputs<'a, N> = (I1::Inputs<'a, N>, I2::Inputs<'a, N>) where Self: 'a, N: Node + 'a;
@@ -2891,8 +3170,11 @@ mod pipeline {
     }
 
     impl <T: Node> NodeT<Debug<T>> {
-        fn debug_out(&self) -> OutputRef<'_, T, PipelineEvent, RnopDeserializer> {
-            todo!()
+        pub fn debug_out(&self) -> OutputRef<'_, Debug<T>, PipelineEvent, RnopDeserializer> {
+            OutputRef {
+                node: self,
+                output: &self.output.0.inner
+            }
         }
     }
 
@@ -2953,6 +3235,9 @@ mod pipeline {
         fn name(this: &Self::InfoStorage) -> &str;
 
         const GROUP: Option<&str> = None;
+        const DEFAULT_WAIT_FOR_MESSAGE: bool = false;
+        const DEFAULT_BLOCKING: bool = false;
+        const DEFAULT_QUEUE_SIZE: Option<i32> = None;
 
         fn node_type(this: &Self::InfoStorage) -> NodeType;
 
@@ -2963,6 +3248,9 @@ mod pipeline {
         const NAME: &str;
         const GROUP: Option<&str> = None;
         const NODE_TYPE: NodeType;
+        const DEFAULT_WAIT_FOR_MESSAGE: bool = false;
+        const DEFAULT_BLOCKING: bool = false;
+        const DEFAULT_QUEUE_SIZE: Option<i32> = None;
     }
 
     impl <T: StaticIoDesc> IoDesc for T {
@@ -2971,6 +3259,9 @@ mod pipeline {
         }
 
         const GROUP: Option<&str> = T::GROUP;
+        const DEFAULT_WAIT_FOR_MESSAGE: bool = T::DEFAULT_WAIT_FOR_MESSAGE;
+        const DEFAULT_BLOCKING: bool = T::DEFAULT_BLOCKING;
+        const DEFAULT_QUEUE_SIZE: Option<i32> = T::DEFAULT_QUEUE_SIZE;
 
         fn node_type(_: &Self::InfoStorage) -> NodeType {
             T::NODE_TYPE
@@ -3010,6 +3301,8 @@ mod pipeline {
     impl StaticIoDesc for XLI {
         const NAME: &str = "in";
         const NODE_TYPE: NodeType = NodeType::SReceiver;
+        const DEFAULT_BLOCKING: bool = true;
+        const DEFAULT_QUEUE_SIZE: Option<i32> = Some(3);
     }
 
     #[derive(serde::Serialize, serde::Deserialize, Debug)]
@@ -3080,9 +3373,13 @@ mod pipeline {
 
     impl <T: IoDesc + IoSerializeable<S>, S: Serializer> core::default::Default for Input<T, S> {
         fn default() -> Self {
+            let mut conf = IoDescConf::default();
+            conf.blocking = T::DEFAULT_BLOCKING;
+            conf.wait_for_message = T::DEFAULT_WAIT_FOR_MESSAGE;
+            conf.queue_size = T::DEFAULT_QUEUE_SIZE;
             Self {
                 input: Default::default(),
-                conf: Default::default(),
+                conf,
                 _pd: core::marker::PhantomData,
             }
         }
@@ -3149,9 +3446,12 @@ mod pipeline {
     // these need to move to sealed types if actually using them
     impl <T: IoDesc + IoDeserializeable<D>, D: Deserializer> core::default::Default for Output<T, D> {
         fn default() -> Self {
+            let mut conf = IoDescConf::default();
+            conf.blocking = T::DEFAULT_BLOCKING;
+            conf.wait_for_message = T::DEFAULT_WAIT_FOR_MESSAGE;
             Self {
                 output: Default::default(),
-                conf: Default::default(),
+                conf,
                 _pd: core::marker::PhantomData,
             }
         }
@@ -3927,6 +4227,7 @@ mod pipeline {
     impl StaticIoDesc for In<CameraFrame> {
         const NAME: &str = "mockIsp";
         const NODE_TYPE: NodeType = NodeType::SReceiver;
+        const DEFAULT_BLOCKING: bool = true;
     }
 
     impl StaticIoDesc for Out<CameraFrame> {
@@ -3946,17 +4247,21 @@ mod pipeline {
         pub auto_focus_mode: AutoFocusMode,
         lens_position: u8,
         lens_position_raw: f32,
-        lens_pos_auto_infinity: u8,
+        pub lens_pos_auto_infinity: u8,
         lens_pos_auto_macro: u8,
         pub exp_manual: ManualExposureParams,
         pub ae_region: RegionParams,
         pub af_region: RegionParams,
-        pub awb_mode: AutoWhiteBalanceMode,
-        pub scene_mode: SceneMode,
-        pub anti_banding_mode: AntiBandingMode,
+        //pub awb_mode: AutoWhiteBalanceMode,
+        pub awb_mode: u8,
+        //pub scene_mode: SceneMode,
+        pub scene_mode: u8,
+        //pub anti_banding_mode: AntiBandingMode,
+        pub anti_banding_mode: u8,
         pub ae_lock_mode: bool,
         pub awb_lock_mode: bool,
-        pub capture_intent: CaptureIntent,
+        //pub capture_intent: CaptureIntent,
+        pub capture_intent: u8,
         //pub control_mode: ControlMode,
         pub control_mode: u8,
         //pub effect_mode: EffectMode,
@@ -3997,9 +4302,9 @@ mod pipeline {
 
     #[derive(serde::Serialize, serde::Deserialize, Debug, Default, PartialEq)]
     pub struct ManualExposureParams {
-        exposure_time_us: u32,
-        sensitivity_iso: u32,
-        frame_duration_us: u32,
+        pub exposure_time_us: u32,
+        pub sensitivity_iso: u32,
+        pub frame_duration_us: u32,
     }
 
     #[derive(serde::Serialize, serde::Deserialize, Debug, Default, PartialEq)]
@@ -4008,7 +4313,8 @@ mod pipeline {
         pub y: u16,
         pub width: u16,
         pub height: u16,
-        pub priority: u16,
+        // why this can repr as a u32 despite the c++ impl saying this is a u16 - no clue
+        pub priority: u32,
     }
 
     #[derive(serde_repr::Serialize_repr, serde_repr::Deserialize_repr, Debug, Default, PartialEq)]
@@ -4106,21 +4412,22 @@ mod pipeline {
 
     #[derive(serde::Serialize, serde::Deserialize, Debug, Default, PartialEq)]
     pub struct StrobeConfig {
-        pub(crate) enable: bool,
-        active_level: u8,
-        gpio_number: i8
+        pub enable: bool,
+        pub active_level: u8,
+        pub gpio_number: i8
     }
 
     #[derive(serde::Serialize, serde::Deserialize, Debug, Default, PartialEq)]
     pub struct StrobeTimings {
-        exposure_begin_offset_us: i32,
-        exposure_end_offset_us: i32,
-        duration_us: u32,
+        pub exposure_begin_offset_us: i32,
+        pub exposure_end_offset_us: i32,
+        pub duration_us: u32,
     }
 
     impl StaticIoDesc for CameraInputControl {
         const NAME: &str = "inputControl";
         const NODE_TYPE: NodeType = NodeType::SReceiver;
+        const DEFAULT_BLOCKING: bool = true;
     }
 
     trait MetadataOnly { }
@@ -4217,6 +4524,7 @@ mod pipeline {
         pub(crate) sensor_type: crate::rpc::CameraSensorType,
         camera_name: String,
         image_orientation: crate::rpc::CameraImageOrientation,
+        //image_orientation: i32,
         resolution_width: i32,
         resolution_height: i32,
         mock_isp_width: i32,
@@ -4467,7 +4775,6 @@ mod pipeline {
 
     impl <G1: NodeRegister, G2: NodeRegister> NodeRegister for (G1, G2) {
         fn register<'a>(&'a self, map: &mut HashMap<u32, InternalNodeInfo<'a>>, io_idx: &mut u32) {
-            println!("call?");
             self.0.register(map, io_idx);
             self.1.register(map, io_idx);
         }
@@ -4490,6 +4797,24 @@ mod pipeline {
         }
 
         pub fn create_node_with_properties<T: Node>(&mut self, properties: T::Properties) -> NodeT<T> where <T as Node>::Input: Default {
+            let id = self.current_node_id;
+            self.current_node_id += 1;
+            NodeT {
+                log_level: LogLevel::Off,
+                //parent_id: 1,
+                properties,
+                _m: core::marker::PhantomData,
+                input: Default::default(),
+                output: Default::default(),
+                id,
+            }
+        }
+
+        pub fn create_debug_node<T: Node>(&mut self) -> NodeT<Debug<T>> where <T as Node>::Input: Default {
+            self.create_debug_node_with_properties(Default::default())
+        }
+
+        pub fn create_debug_node_with_properties<T: Node>(&mut self, properties: T::Properties) -> NodeT<Debug<T>> where <T as Node>::Input: Default {
             let id = self.current_node_id;
             self.current_node_id += 1;
             NodeT {
@@ -4839,11 +5164,15 @@ mod pipeline {
     impl StaticIoDesc for Numbered<CameraFrame, 1> {
         const NAME: &str = "left";
         const NODE_TYPE: NodeType = NodeType::SReceiver;
+        const DEFAULT_BLOCKING: bool = true;
+        const DEFAULT_QUEUE_SIZE: Option<i32> = Some(3);
     }
 
     impl StaticIoDesc for Numbered<CameraFrame, 2> {
         const NAME: &str = "right";
         const NODE_TYPE: NodeType = NodeType::SReceiver;
+        const DEFAULT_BLOCKING: bool = true;
+        const DEFAULT_QUEUE_SIZE: Option<i32> = Some(3);
     }
 
     #[derive(Default)]
@@ -5115,6 +5444,7 @@ mod pipeline {
     impl StaticIoDesc for In<StereoDepthConfig> {
         const NAME: &str = "inputConfig";
         const NODE_TYPE: NodeType = NodeType::SReceiver;
+        const DEFAULT_BLOCKING: bool = true;
     }
 
     impl StaticIoDesc for Out<StereoDepthConfig> {
@@ -5647,11 +5977,14 @@ mod pipeline {
     impl StaticIoDesc for Numbered<CameraFrame, 15> {
         const NAME: &str = "input";
         const NODE_TYPE: NodeType = NodeType::SReceiver;
+        const DEFAULT_QUEUE_SIZE: Option<i32> = Some(4);
     }
 
     impl StaticIoDesc for Numbered<CameraFrame, 16> {
         const NAME: &str = "inputAlignTo";
         const NODE_TYPE: NodeType = NodeType::SReceiver;
+        const DEFAULT_WAIT_FOR_MESSAGE: bool = true;
+        const DEFAULT_QUEUE_SIZE: Option<i32> = Some(1);
     }
 
     #[derive(Default)]
@@ -6605,7 +6938,7 @@ mod pipeline {
 
         assert_eq!(pipe.nodes.len(), 4);
         assert_eq!(pipe.connections.len(), 3);
-        panic!("{:?}\n{:?}", pipe.connections, pipe.nodes);
+        //panic!("{:?}\n{:?}", pipe.connections, pipe.nodes);
     }
 
     #[test]
@@ -7925,16 +8258,333 @@ pub mod logger {
     }
 }
 
+#[test]
+fn image_align() {
+    const CAMERA_SIZE: (u32, u32) = (1280, 720);
 
+    let mut pipe = pipeline::Pipeline::new();
+    let mut camera_left = pipe.create_node::<pipeline::Camera>();
+    let cam_l = camera_left.properties_mut();
+
+    /*
+    {
+        // TODO: figure out how exactly these regions are being changed
+        //      - they seem to differ every time its ran
+        //      - maybe from querying the device?
+        cam_l.initial_control.af_region.x = 17586;
+        cam_l.initial_control.af_region.priority = 17586;
+
+        cam_l.initial_control.ae_lock_mode = false;
+        cam_l.initial_control.awb_lock_mode = false;
+
+
+        cam_l.initial_control.strobe_config.enable = false;
+        // control_mode: 132, effect_mode: 60, frame_sync_mode: 25
+        // control_mode: 27, effect_mode: 146, frame_sync_mode: 35
+        cam_l.initial_control.control_mode = 27;
+        cam_l.initial_control.effect_mode = 146;
+        cam_l.initial_control.frame_sync_mode = 35;
+        cam_l.initial_control.enable_hdr = false;
+    }
+    */
+    cam_l.board_socket = crate::rpc::CameraBoardSocket::B;
+
+    camera_left.request_output(pipeline::CameraCapability {
+        size: pipeline::Capability::new_single(CAMERA_SIZE),
+        fps: pipeline::Capability::new_none(),
+        ty: None,
+        enable_undistortion: None,
+        isp_output: false,
+        resize_mode: pipeline::FrameResize::Crop,
+    });
+
+    let cam_left = camera_left.requested_camera_outputs().next().unwrap();
+
+    let mut camera_right = pipe.create_node::<pipeline::Camera>();
+    let cam_r = camera_right.properties_mut();
+    /*
+    {
+        cam_r.initial_control.ae_region.x = 48944;
+        cam_r.initial_control.ae_region.y = 31727;
+        cam_r.initial_control.ae_region.width = 24153;
+        cam_r.initial_control.ae_region.height = 0;
+        cam_r.initial_control.ae_region.priority = 3;
+
+        // x: 0, y: 0, width: 28518, height: 118, priority: 0
+        cam_r.initial_control.af_region.width = 28518;
+        cam_r.initial_control.af_region.height = 118;
+
+        cam_r.initial_control.ae_lock_mode = false;
+        cam_r.initial_control.awb_lock_mode = false;
+
+        cam_r.initial_control.strobe_config.enable = false;
+        cam_r.initial_control.contrast = -127;
+        cam_r.initial_control.saturation = 2;
+        // low_power_frame_burst: 176, low_power_frame_discard: 132
+        cam_r.initial_control.low_power_frame_burst = 176;
+        cam_r.initial_control.low_power_frame_discard = 4;
+        cam_r.initial_control.enable_hdr = false;
+
+    }
+    */
+    cam_r.board_socket = crate::rpc::CameraBoardSocket::C;
+
+    camera_right.request_output(pipeline::CameraCapability {
+        size: pipeline::Capability::new_single(CAMERA_SIZE),
+        fps: pipeline::Capability::new_none(),
+        ty: None,
+        enable_undistortion: None,
+        isp_output: false,
+        resize_mode: pipeline::FrameResize::Crop,
+    });
+
+    let cam_right = camera_right.requested_camera_outputs().next().unwrap();
+
+    let mut stereo = pipe.create_node::<pipeline::StereoDepth>();
+
+    let props = stereo.properties_mut();
+
+    /*
+    {
+        use crate::pipeline::Filter;
+        props.initial_config.algorithm_control.enable_extended = false;
+        props.initial_config.algorithm_control.enable_left_right_check = true;
+        props.initial_config.algorithm_control.enable_software_left_right_check = false;
+        props.initial_config.algorithm_control.enable_subpixel = false;
+        props.initial_config.algorithm_control.subpixel_fractional_bits = 3;
+
+        props.initial_config.algorithm_control.depth_align = pipeline::DepthAlign::Center;
+
+
+        props.initial_config.post_processing.spatial_filter.enable = false;
+        props.initial_config.post_processing.temporal_filter.enable = false;
+        props.initial_config.post_processing.speckle_filter.enable = false;
+        props.initial_config.post_processing.hole_filling.enable = true;
+        props.initial_config.post_processing.hole_filling.invalidate_disparities = true;
+        props.initial_config.post_processing.adaptive_median_filter.enable = true;
+        props.initial_config.census_transform.enable_mean_mode = true;
+
+        props.initial_config.cost_matching.enable_companding = false;
+        props.initial_config.cost_matching.enable_software_confidence_thresholding = false;
+
+        props.initial_config.cost_aggregation.p1_config.enable_adaptive = true;
+        props.initial_config.cost_aggregation.p2_config.enable_adaptive = true;
+
+        props.initial_config.confidence_metrics.flatness_override = false;
+
+        props.enable_rectification = true;
+        props.enable_runtime_stereo_mode_switch = false;
+        props.keep_aspect_ratio = true;
+        props.focal_length_from_calibration = true;
+        props.enable_frame_sync = true;
+
+        props.initial_config.post_processing.filtering_order = [Filter::Decimation, Filter::Median, Filter::Speckle, Filter::Spatial, Filter::Temporal];
+        props.initial_config.post_processing.median = pipeline::MedianFilter::Kernel7x7;
+        props.initial_config.post_processing.spatial_filter.enable = true;
+        props.initial_config.post_processing.spatial_filter.hole_filling_radius = 1;
+        props.initial_config.post_processing.temporal_filter.enable = true;
+        props.initial_config.post_processing.temporal_filter.alpha = 0.5;
+        props.initial_config.post_processing.threshold_filter.max_range = 15000;
+        props.initial_config.post_processing.speckle_filter.enable = true;
+        props.initial_config.post_processing.speckle_filter.range = 200;
+        props.initial_config.post_processing.decimation_filter.decimation_factor = 2;
+        props.initial_config.post_processing.hole_filling.high_confidence_threshold = 100;
+        props.initial_config.post_processing.hole_filling.fill_confidence_threshold = 210;
+        props.initial_config.post_processing.hole_filling.min_valid_disparity = 3;
+
+        props.initial_config.cost_matching.confidence_threshold = 15;
+
+        props.initial_config.cost_aggregation.p1_config.default_value = 45;
+        props.initial_config.cost_aggregation.p1_config.edge_value = 40;
+        props.initial_config.cost_aggregation.p1_config.smooth_value = 49;
+
+        props.initial_config.cost_aggregation.p2_config.default_value = 95;
+        props.initial_config.cost_aggregation.p2_config.edge_value = 90;
+        props.initial_config.cost_aggregation.p2_config.smooth_value = 99;
+
+        props.initial_config.confidence_metrics.motion_vector_confidence_weight = 10;
+        props.initial_config.confidence_metrics.flatness_confidence_weight = 2;
+        props.initial_config.confidence_metrics.flatness_confidence_threshold = 5;
+
+        props.post_processing_shaves = 3;
+        props.post_processing_memory_slices = 3;
+    }
+    */
+
+    pipe.link(cam_left, stereo.input().left);
+    pipe.link(cam_right, stereo.input().right);
+
+    let mut color = pipe.create_node::<pipeline::Camera>();
+
+    {
+        color.properties_mut().board_socket = crate::rpc::CameraBoardSocket::A;
+    }
+
+    color.request_output(pipeline::CameraCapability {
+        size: pipeline::Capability::new_single(CAMERA_SIZE),
+        fps: pipeline::Capability::new_none(),
+        ty: Some(pipeline::FrameType::Rgb888i),
+        enable_undistortion: None,
+        isp_output: false,
+        resize_mode: pipeline::FrameResize::Crop,
+    });
+    let color_cam = color.requested_camera_outputs().next().unwrap();
+
+    let mut align = pipe.create_node::<pipeline::ImageAlign>();
+
+    pipe.link(stereo.output().depth, align.input().input);
+    pipe.link(color_cam.clone(), align.input().align_to);
+
+    let mut depth_out = pipe.create_node::<pipeline::XLinkOut>();
+    let mut color_out = pipe.create_node::<pipeline::XLinkOut>();
+
+    let xlink_depth_out = pipe.create_output_queue(align.output().aligned, &mut depth_out);
+    let xlink_color_out = pipe.create_output_queue(color_cam, &mut color_out);
+
+
+    assert_eq!(pipe.nodes.len(), 7);
+    assert_eq!(pipe.connections.len(), 6);
+
+    //let schema = pipe.build("test id");
+
+    use pipeline::{RnopDeserializer, Deserializer};
+
+    let align_props_bytes = vec![185,8,185,1,0,4,0,0,188,0,255,1,2];
+    let align_props = RnopDeserializer::deserialize::<pipeline::ImageAlignProperties>(&align_props_bytes).unwrap();
+
+    let stereo_props_bytes = vec![185,23,185,7,185,12,1,2,136,0,0,122,68,1,0,1,1,10,5,0,190,0,185,11,186,5,3,1,2,4,5,0,0,185,5,0,2,136,0,0,0,63,3,1,185,4,0,3,136,205,204,204,62,3,185,2,0,134,255,255,0,0,185,2,0,133,0,1,185,3,0,50,2,185,2,1,0,185,5,1,128,210,128,200,1,1,185,2,1,128,200,185,6,255,0,1,0,1,1,185,6,1,0,0,55,0,185,3,0,2,127,185,7,1,128,250,129,244,1,128,250,129,244,1,185,6,1,11,10,22,15,5,185,4,1,33,22,63,185,6,20,4,1,8,2,0,2,255,1,0,190,190,190,190,1,185,5,189,0,189,0,190,16,16,0,3,255,255,1,190,1,190,190,190,190,190,190];
+    let stereo_props = RnopDeserializer::deserialize::<pipeline::StereoDepthProperties>(&stereo_props_bytes).unwrap();
+    // cam B (left)
+    let cam_1_props_bytes = vec![185,22,185,33,0,3,0,136,0,0,0,0,0,0,185,3,0,130,72,57,65,179,129,140,89,185,5,129,72,57,129,65,179,129,140,89,0,0,185,5,0,0,64,0,0,96,0,0,0,0,0,0,0,0,185,3,0,128,227,14,185,3,133,137,89,134,72,57,65,179,129,140,89,130,96,59,65,179,0,0,224,57,65,0,0,0,128,176,57,0,186,0,2,255,189,0,255,255,255,255,255,136,0,0,128,191,136,0,0,128,191,0,3,134,0,0,160,0,3,134,0,0,160,0,4,4,4,190,190,186,1,185,6,185,1,184,0,186,2,129,128,2,129,144,1,185,1,184,0,136,0,0,200,65,190,0,190,0];
+    let cam_1_props = RnopDeserializer::deserialize::<pipeline::CameraProperties>(&cam_1_props_bytes).unwrap();
+
+    // cam C (right)
+    let cam_2_props_bytes = vec![185,22,185,33,0,3,0,136,0,0,0,0,0,0,185,3,0,0,0,185,5,129,128,28,129,65,179,129,140,89,0,3,185,5,0,0,129,102,111,118,0,0,0,0,0,0,0,0,0,0,185,3,0,0,0,185,3,0,0,0,0,0,0,132,129,2,0,0,0,0,128,192,97,0,186,0,1,255,189,0,255,255,255,255,255,136,0,0,128,191,136,0,0,128,191,0,3,134,0,0,160,0,3,134,0,0,160,0,4,4,4,190,190,186,1,185,6,185,1,184,0,186,2,129,128,2,129,144,1,185,1,184,0,136,0,0,200,65,190,0,190,0];
+    let cam_2_props = RnopDeserializer::deserialize::<pipeline::CameraProperties>(&cam_2_props_bytes).unwrap();
+
+    // cam A (center)
+    let cam_3_props_bytes = vec![185,22,185,33,0,3,0,136,0,0,0,0,5,0,185,3,0,130,10,0,1,0,130,144,16,87,248,185,5,129,40,212,0,10,2,130,255,255,255,255,185,5,129,255,255,0,128,204,23,130,124,187,4,0,0,0,0,0,0,0,10,128,223,1,185,3,0,0,0,185,3,134,48,13,64,19,0,130,66,32,239,0,0,0,0,0,0,0,0,0,0,0,0,0,186,0,0,255,189,0,255,255,255,255,255,136,0,0,128,191,136,0,0,128,191,0,3,134,0,0,160,0,3,134,0,0,160,0,4,4,4,190,190,186,1,185,6,185,1,184,0,186,2,129,0,5,129,192,3,185,1,184,0,136,0,0,200,65,22,0,1,0];
+    //let cam_val_3 = rnop::Value::parse(&cam_3_props_bytes).unwrap();
+    //println!("{cam_val_3:?}");
+    let cam_3_props = RnopDeserializer::deserialize::<pipeline::CameraProperties>(&cam_3_props_bytes).unwrap();
+
+    let calign = pipeline::ImageAlignProperties::default();
+    assert_eq!(calign, align_props);
+
+    let mut cam_r = pipeline::CameraProperties::default();
+    {
+        cam_r.initial_control.exp_manual.sensitivity_iso = 3007396168;
+        cam_r.initial_control.exp_manual.frame_duration_us = 22924;
+
+        cam_r.initial_control.ae_region.x = 14664;
+        cam_r.initial_control.ae_region.y = 45889;
+        cam_r.initial_control.ae_region.width = 22924;
+
+        cam_r.initial_control.af_region.width = 64;
+
+        cam_r.initial_control.awb_mode = 96;
+
+        cam_r.initial_control.strobe_config.active_level = 227;
+        cam_r.initial_control.strobe_config.gpio_number = 14;
+
+        cam_r.initial_control.strobe_timings.exposure_begin_offset_us = 22921;
+        cam_r.initial_control.strobe_timings.exposure_end_offset_us = -1287571128;
+        cam_r.initial_control.strobe_timings.duration_us = 22924;
+
+        cam_r.initial_control.ae_max_exposure_time_us = 3007396704;
+        cam_r.initial_control.contrast = -32;
+        cam_r.initial_control.saturation = 57;
+        cam_r.initial_control.sharpness = 65;
+
+        cam_r.initial_control.low_power_frame_burst = 176;
+        cam_r.initial_control.low_power_frame_discard = 57;
+
+        cam_r.board_socket = rpc::CameraBoardSocket::C;
+
+        cam_r.output_requests.push(pipeline::CameraCapability {
+            size: pipeline::Capability::new_single((640, 400)),
+            fps: pipeline::Capability::new_single(25.),
+            ty: None,
+            resize_mode: pipeline::FrameResize::Crop,
+            enable_undistortion: None,
+            isp_output: false,
+        });
+    }
+    assert_eq!(cam_r, cam_1_props);
+
+    let mut cam_l = pipeline::CameraProperties::default();
+    {
+        cam_l.initial_control.ae_region.x = 7296;
+        cam_l.initial_control.ae_region.y = 45889;
+        cam_l.initial_control.ae_region.width = 22924;
+        cam_l.initial_control.ae_region.priority = 3;
+
+        cam_l.initial_control.af_region.width = 28518;
+        cam_l.initial_control.af_region.height = 118;
+
+        cam_l.initial_control.contrast = -127;
+        cam_l.initial_control.saturation = 2;
+        cam_l.initial_control.low_power_frame_burst = 192;
+        cam_l.initial_control.low_power_frame_discard = 97;
+
+        cam_l.board_socket = rpc::CameraBoardSocket::B;
+
+        cam_l.output_requests.push(pipeline::CameraCapability {
+            size: pipeline::Capability::new_single((640, 400)),
+            fps: pipeline::Capability::new_single(25.),
+            ty: None,
+            resize_mode: pipeline::FrameResize::Crop,
+            enable_undistortion: None,
+            isp_output: false,
+        });
+    }
+    assert_eq!(cam_l, cam_2_props);
+
+    let mut color_cam = pipeline::CameraProperties::default();
+    {
+        color_cam.initial_control.lens_pos_auto_infinity = 5;
+        color_cam.initial_control.exp_manual.sensitivity_iso = 65546;
+        color_cam.initial_control.exp_manual.frame_duration_us = 4166455440;
+
+        color_cam.initial_control.ae_region.x = 54312;
+        color_cam.initial_control.ae_region.width = 10;
+        color_cam.initial_control.ae_region.height = 2;
+        color_cam.initial_control.ae_region.priority = 4294967295;
+
+        color_cam.initial_control.af_region.x = 65535;
+        color_cam.initial_control.af_region.width = 204;
+        color_cam.initial_control.af_region.height = 23;
+        color_cam.initial_control.af_region.priority = 310140;
+
+        color_cam.initial_control.control_mode = 10;
+        color_cam.initial_control.effect_mode = 223;
+        color_cam.initial_control.frame_sync_mode = 1;
+
+        color_cam.initial_control.strobe_timings.exposure_begin_offset_us = 322964784;
+        color_cam.initial_control.strobe_timings.duration_us = 15671362;
+
+        color_cam.board_socket = rpc::CameraBoardSocket::A;
+
+        color_cam.output_requests.push(pipeline::CameraCapability {
+            size: pipeline::Capability::new_single((1280, 960)),
+            fps: pipeline::Capability::new_single(25.),
+            ty: Some(pipeline::FrameType::Nv12),
+            resize_mode: pipeline::FrameResize::Crop,
+            enable_undistortion: Some(true),
+            isp_output: false,
+        });
+    }
+    assert_eq!(color_cam, cam_3_props);
+
+    let mut stereo = pipeline::StereoDepthProperties::default();
+    {
+        stereo.initial_config.algorithm_control.enable_extended = true;
+    }
+    assert_eq!(stereo, stereo_props);
+}
 
 /*
-{NodeConnection { input_id: 2, input_name: "left", input_group: None, output_id: 0, output_name: "0", output_group: Some("dynamicOutputs") }, NodeConnection { input_id: 3, input_name: "input", input_group: None, output_id: 2, output_name: "depth", output_group: None }, NodeConnection { input_id: 6, input_name: "in", input_group: None, output_id: 4, output_name: "0", output_group: Some("dynamicOutputs") }, NodeConnection { input_id: 5, input_name: "in", input_group: None, output_id: 3, output_name: "outputAligned", output_group: None }, NodeConnection { input_id: 2, input_name: "right", input_group: None, output_id: 1, output_name: "0", output_group: Some("dynamicOutputs") }, NodeConnection { input_id: 3, input_name: "inputAlignTo", input_group: None, output_id: 4, output_name: "0", output_group: Some("dynamicOutputs") }}
-*/
+[19443010A1A1872D00] [169.254.1.222] [1777463831.205] [host] [trace] RPC: [1,1,16527326580805871264,[{"bridges":[],"connections":[{"node1Id":4,"node1Output":"outputAligned","node1OutputGroup":"","node2Id":7,"node2Input":"in","node2InputGroup":""},{"node1Id":3,"node1Output":"depth","node1OutputGroup":"","node2Id":4,"node2Input":"input","node2InputGroup":""},{"node1Id":2,"node1Output":"0","node1OutputGroup":"dynamicOutputs","node2Id":3,"node2Input":"right","node2InputGroup":""},{"node1Id":1,"node1Output":"0","node1OutputGroup":"dynamicOutputs","node2Id":3,"node2Input":"left","node2InputGroup":""},{"node1Id":0,"node1Output":"0","node1OutputGroup":"dynamicOutputs","node2Id":5,"node2Input":"in","node2InputGroup":""},{"node1Id":0,"node1Output":"0","node1OutputGroup":"dynamicOutputs","node2Id":4,"node2Input":"inputAlignTo","node2InputGroup":""}],"globalProperties":{"calibData":null,"cameraSocketTuningBlobSize":[],"cameraSocketTuningBlobUri":[],"cameraTuningBlobSize":null,"cameraTuningBlobUri":"","eepromId":0,"leonCssFrequencyHz":700000000.0,"leonMssFrequencyHz":700000000.0,"pipelineName":null,"pipelineVersion":null,"sippBufferSize":18432,"sippDmaBufferSize":16384,"xlinkChunkSize":-1},"nodes":[[7,{"alias":"","deviceId":"19443010A1A1872D00","deviceNode":true,"id":7,"ioInfo":[[["","pipelineEventOutput"],{"blocking":false,"group":"","id":44,"name":"pipelineEventOutput","queueSize":8,"type":0,"waitForMessage":false}],[["","in"],{"blocking":true,"group":"","id":43,"name":"in","queueSize":3,"type":3,"waitForMessage":false}]],"logLevel":0,"name":"XLinkOut","parentId":-1,"properties":[185,5,136,0,0,128,191,189,19,95,95,120,95,52,95,111,117,116,112,117,116,65,108,105,103,110,101,100,0,255,255]}],[5,{"alias":"","deviceId":"19443010A1A1872D00","deviceNode":true,"id":5,"ioInfo":[[["","pipelineEventOutput"],{"blocking":false,"group":"","id":40,"name":"pipelineEventOutput","queueSize":8,"type":0,"waitForMessage":false}],[["","in"],{"blocking":true,"group":"","id":39,"name":"in","queueSize":3,"type":3,"waitForMessage":false}]],"logLevel":0,"name":"XLinkOut","parentId":-1,"properties":[185,5,136,0,0,128,191,189,7,95,95,120,95,48,95,48,0,255,255]}],[4,{"alias":"","deviceId":"19443010A1A1872D00","deviceNode":true,"id":4,"ioInfo":[[["","passthroughInput"],{"blocking":false,"group":"","id":38,"name":"passthroughInput","queueSize":8,"type":0,"waitForMessage":false}],[["","outputAligned"],{"blocking":false,"group":"","id":37,"name":"outputAligned","queueSize":8,"type":0,"waitForMessage":false}],[["","pipelineEventOutput"],{"blocking":false,"group":"","id":36,"name":"pipelineEventOutput","queueSize":8,"type":0,"waitForMessage":false}],[["","inputAlignTo"],{"blocking":false,"group":"","id":35,"name":"inputAlignTo","queueSize":1,"type":3,"waitForMessage":true}],[["","input"],{"blocking":false,"group":"","id":34,"name":"input","queueSize":4,"type":3,"waitForMessage":false}],[["","inputConfig"],{"blocking":false,"group":"","id":33,"name":"inputConfig","queueSize":4,"type":3,"waitForMessage":false}]],"logLevel":0,"name":"ImageAlign","parentId":-1,"properties":[185,8,185,1,0,4,0,0,188,0,255,1,2]}],[3,{"alias":"","deviceId":"19443010A1A1872D00","deviceNode":true,"id":3,"ioInfo":[[["","confidenceMap"],{"blocking":false,"group":"","id":32,"name":"confidenceMap","queueSize":8,"type":0,"waitForMessage":false}],[["","debugExtDispLrCheckIt2"],{"blocking":false,"group":"","id":30,"name":"debugExtDispLrCheckIt2","queueSize":8,"type":0,"waitForMessage":false}],[["","debugDispLrCheckIt2"],{"blocking":false,"group":"","id":28,"name":"debugDispLrCheckIt2","queueSize":8,"type":0,"waitForMessage":false}],[["","rectifiedLeft"],{"blocking":false,"group":"","id":24,"name":"rectifiedLeft","queueSize":8,"type":0,"waitForMessage":false}],[["","syncedRight"],{"blocking":false,"group":"","id":23,"name":"syncedRight","queueSize":8,"type":0,"waitForMessage":false}],[["","syncedLeft"],{"blocking":false,"group":"","id":22,"name":"syncedLeft","queueSize":8,"type":0,"waitForMessage":false}],[["","disparity"],{"blocking":false,"group":"","id":21,"name":"disparity","queueSize":8,"type":0,"waitForMessage":false}],[["","debugDispCostDump"],{"blocking":false,"group":"","id":31,"name":"debugDispCostDump","queueSize":8,"type":0,"waitForMessage":false}],[["","depth"],{"blocking":false,"group":"","id":20,"name":"depth","queueSize":8,"type":0,"waitForMessage":false}],[["","pipelineEventOutput"],{"blocking":false,"group":"","id":19,"name":"pipelineEventOutput","queueSize":8,"type":0,"waitForMessage":false}],[["","outConfig"],{"blocking":false,"group":"","id":26,"name":"outConfig","queueSize":8,"type":0,"waitForMessage":false}],[["","right"],{"blocking":true,"group":"","id":18,"name":"right","queueSize":3,"type":3,"waitForMessage":false}],[["","left"],{"blocking":true,"group":"","id":17,"name":"left","queueSize":3,"type":3,"waitForMessage":false}],[["","rectifiedRight"],{"blocking":false,"group":"","id":25,"name":"rectifiedRight","queueSize":8,"type":0,"waitForMessage":false}],[["","inputAlignTo"],{"blocking":false,"group":"","id":16,"name":"inputAlignTo","queueSize":1,"type":3,"waitForMessage":true}],[["","debugExtDispLrCheckIt1"],{"blocking":false,"group":"","id":29,"name":"debugExtDispLrCheckIt1","queueSize":8,"type":0,"waitForMessage":false}],[["","debugDispLrCheckIt1"],{"blocking":false,"group":"","id":27,"name":"debugDispLrCheckIt1","queueSize":8,"type":0,"waitForMessage":false}],[["","inputConfig"],{"blocking":true,"group":"","id":15,"name":"inputConfig","queueSize":3,"type":3,"waitForMessage":false}]],"logLevel":0,"name":"StereoDepth","parentId":-1,"properties":[185,23,185,7,185,12,1,2,136,0,0,122,68,1,0,1,1,10,5,0,190,0,185,11,186,5,3,1,2,4,5,0,0,185,5,0,2,136,0,0,0,63,3,1,185,4,0,3,136,205,204,204,62,3,185,2,0,134,255,255,0,0,185,2,0,133,0,1,185,3,0,50,2,185,2,1,0,185,5,1,128,210,128,200,1,1,185,2,1,128,200,185,6,255,0,1,0,1,1,185,6,1,0,0,55,0,185,3,0,2,127,185,7,1,128,250,129,244,1,128,250,129,244,1,185,6,1,11,10,22,15,5,185,4,1,33,22,63,185,6,20,4,1,8,2,0,2,255,1,0,190,190,190,190,1,185,5,189,0,189,0,190,16,16,0,3,255,255,1,190,1,190,190,190,190,190,190]}],[2,{"alias":"","deviceId":"19443010A1A1872D00","deviceNode":true,"id":2,"ioInfo":[[["dynamicOutputs","0"],{"blocking":false,"group":"dynamicOutputs","id":14,"name":"0","queueSize":8,"type":0,"waitForMessage":false}],[["","pipelineEventOutput"],{"blocking":false,"group":"","id":12,"name":"pipelineEventOutput","queueSize":8,"type":0,"waitForMessage":false}],[["","raw"],{"blocking":false,"group":"","id":13,"name":"raw","queueSize":8,"type":0,"waitForMessage":false}],[["","mockIsp"],{"blocking":true,"group":"","id":11,"name":"mockIsp","queueSize":8,"type":3,"waitForMessage":false}],[["","inputControl"],{"blocking":true,"group":"","id":10,"name":"inputControl","queueSize":3,"type":3,"waitForMessage":false}]],"logLevel":0,"name":"Camera","parentId":-1,"properties":[185,22,185,33,0,3,0,136,0,0,0,0,102,111,185,3,0,0,0,185,5,0,0,0,0,0,185,5,0,0,0,0,0,128,129,2,0,0,0,0,0,0,0,185,3,0,48,105,185,3,133,131,97,134,32,59,64,5,129,34,123,0,0,0,72,108,128,186,0,0,0,72,108,0,186,0,2,255,189,0,255,255,255,255,255,136,0,0,128,191,136,0,0,128,191,0,3,134,0,0,160,0,3,134,0,0,160,0,4,4,4,190,190,186,1,185,6,185,1,184,0,186,2,129,128,2,129,144,1,185,1,184,0,136,0,0,200,65,190,0,190,0]}],[1,{"alias":"","deviceId":"19443010A1A1872D00","deviceNode":true,"id":1,"ioInfo":[[["dynamicOutputs","0"],{"blocking":false,"group":"dynamicOutputs","id":9,"name":"0","queueSize":8,"type":0,"waitForMessage":false}],[["","pipelineEventOutput"],{"blocking":false,"group":"","id":7,"name":"pipelineEventOutput","queueSize":8,"type":0,"waitForMessage":false}],[["","raw"],{"blocking":false,"group":"","id":8,"name":"raw","queueSize":8,"type":0,"waitForMessage":false}],[["","mockIsp"],{"blocking":true,"group":"","id":6,"name":"mockIsp","queueSize":8,"type":3,"waitForMessage":false}],[["","inputControl"],{"blocking":true,"group":"","id":5,"name":"inputControl","queueSize":3,"type":3,"waitForMessage":false}]],"logLevel":0,"name":"Camera","parentId":-1,"properties":[185,22,185,33,0,3,0,136,0,0,0,0,0,0,185,3,0,0,0,185,5,129,64,79,129,186,242,129,131,97,0,3,185,5,0,0,129,102,111,118,0,0,0,0,0,0,0,0,0,0,185,3,0,0,0,185,3,0,0,0,0,0,0,132,129,2,0,0,0,0,128,192,128,148,0,186,0,1,255,189,0,255,255,255,255,255,136,0,0,128,191,136,0,0,128,191,0,3,134,0,0,160,0,3,134,0,0,160,0,4,4,4,190,190,186,1,185,6,185,1,184,0,186,2,129,128,2,129,144,1,185,1,184,0,136,0,0,200,65,190,0,190,0]}],[0,{"alias":"","deviceId":"19443010A1A1872D00","deviceNode":true,"id":0,"ioInfo":[[["dynamicOutputs","0"],{"blocking":false,"group":"dynamicOutputs","id":4,"name":"0","queueSize":8,"type":0,"waitForMessage":false}],[["","pipelineEventOutput"],{"blocking":false,"group":"","id":2,"name":"pipelineEventOutput","queueSize":8,"type":0,"waitForMessage":false}],[["","raw"],{"blocking":false,"group":"","id":3,"name":"raw","queueSize":8,"type":0,"waitForMessage":false}],[["","mockIsp"],{"blocking":true,"group":"","id":1,"name":"mockIsp","queueSize":8,"type":3,"waitForMessage":false}],[["","inputControl"],{"blocking":true,"group":"","id":0,"name":"inputControl","queueSize":3,"type":3,"waitForMessage":false}]],"logLevel":0,"name":"Camera","parentId":-1,"properties":[185,22,185,33,0,3,0,136,0,0,0,0,0,0,185,3,0,0,0,185,5,0,0,0,0,0,185,5,129,127,254,0,0,0,129,127,254,0,0,0,0,0,0,115,128,152,128,130,185,3,0,0,0,185,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,186,0,0,255,189,0,255,255,255,255,255,136,0,0,128,191,136,0,0,128,191,0,3,134,0,0,160,0,3,134,0,0,160,0,4,4,4,190,190,186,1,185,6,185,1,184,0,186,2,129,0,5,129,192,3,185,1,184,0,136,0,0,200,65,22,0,1,0]}]]}]]
 
-// TODO: look at this later
-// this uses imagealign without sync
-// sync will need to be used in order to get rgbd data however.
-/*
- * Schema dump: {"bridges":[],"connections":[{"node1Id":4,"node1Output":"outputAligned","node1OutputGroup":"","node2Id":7,"node2Input":"in","node2InputGroup":""},{"node1Id":3,"node1Output":"depth","node1OutputGroup":"","node2Id":4,"node2Input":"input","node2InputGroup":""},{"node1Id":2,"node1Output":"0","node1OutputGroup":"dynamicOutputs","node2Id":3,"node2Input":"right","node2InputGroup":""},{"node1Id":1,"node1Output":"0","node1OutputGroup":"dynamicOutputs","node2Id":3,"node2Input":"left","node2InputGroup":""},{"node1Id":0,"node1Output":"0","node1OutputGroup":"dynamicOutputs","node2Id":5,"node2Input":"in","node2InputGroup":""},{"node1Id":0,"node1Output":"0","node1OutputGroup":"dynamicOutputs","node2Id":4,"node2Input":"inputAlignTo","node2InputGroup":""}],"globalProperties":{"calibData":null,"cameraSocketTuningBlobSize":[],"cameraSocketTuningBlobUri":[],"cameraTuningBlobSize":null,"cameraTuningBlobUri":"","eepromId":0,"leonCssFrequencyHz":700000000.0,"leonMssFrequencyHz":700000000.0,"pipelineName":null,"pipelineVersion":null,"sippBufferSize":18432,"sippDmaBufferSize":16384,"xlinkChunkSize":-1},"nodes":[[7,{"alias":"","deviceId":"19443010A1A1872D00","deviceNode":true,"id":7,"ioInfo":[[["","pipelineEventOutput"],{"blocking":false,"group":"","id":44,"name":"pipelineEventOutput","queueSize":8,"type":0,"waitForMessage":false}],[["","in"],{"blocking":true,"group":"","id":43,"name":"in","queueSize":3,"type":3,"waitForMessage":false}]],"logLevel":0,"name":"XLinkOut","parentId":-1,"properties":[185,5,136,0,0,128,191,189,19,95,95,120,95,52,95,111,117,116,112,117,116,65,108,105,103,110,101,100,0,255,255]}],[5,{"alias":"","deviceId":"19443010A1A1872D00","deviceNode":true,"id":5,"ioInfo":[[["","pipelineEventOutput"],{"blocking":false,"group":"","id":40,"name":"pipelineEventOutput","queueSize":8,"type":0,"waitForMessage":false}],[["","in"],{"blocking":true,"group":"","id":39,"name":"in","queueSize":3,"type":3,"waitForMessage":false}]],"logLevel":0,"name":"XLinkOut","parentId":-1,"properties":[185,5,136,0,0,128,191,189,7,95,95,120,95,48,95,48,0,255,255]}],[4,{"alias":"","deviceId":"19443010A1A1872D00","deviceNode":true,"id":4,"ioInfo":[[["","passthroughInput"],{"blocking":false,"group":"","id":38,"name":"passthroughInput","queueSize":8,"type":0,"waitForMessage":false}],[["","outputAligned"],{"blocking":false,"group":"","id":37,"name":"outputAligned","queueSize":8,"type":0,"waitForMessage":false}],[["","pipelineEventOutput"],{"blocking":false,"group":"","id":36,"name":"pipelineEventOutput","queueSize":8,"type":0,"waitForMessage":false}],[["","inputAlignTo"],{"blocking":false,"group":"","id":35,"name":"inputAlignTo","queueSize":1,"type":3,"waitForMessage":true}],[["","input"],{"blocking":false,"group":"","id":34,"name":"input","queueSize":4,"type":3,"waitForMessage":false}],[["","inputConfig"],{"blocking":false,"group":"","id":33,"name":"inputConfig","queueSize":4,"type":3,"waitForMessage":false}]],"logLevel":0,"name":"ImageAlign","parentId":-1,"properties":[185,8,185,1,0,4,0,0,188,0,255,1,2]}],[3,{"alias":"","deviceId":"19443010A1A1872D00","deviceNode":true,"id":3,"ioInfo":[[["","confidenceMap"],{"blocking":false,"group":"","id":32,"name":"confidenceMap","queueSize":8,"type":0,"waitForMessage":false}],[["","debugExtDispLrCheckIt2"],{"blocking":false,"group":"","id":30,"name":"debugExtDispLrCheckIt2","queueSize":8,"type":0,"waitForMessage":false}],[["","debugDispLrCheckIt2"],{"blocking":false,"group":"","id":28,"name":"debugDispLrCheckIt2","queueSize":8,"type":0,"waitForMessage":false}],[["","rectifiedLeft"],{"blocking":false,"group":"","id":24,"name":"rectifiedLeft","queueSize":8,"type":0,"waitForMessage":false}],[["","syncedRight"],{"blocking":false,"group":"","id":23,"name":"syncedRight","queueSize":8,"type":0,"waitForMessage":false}],[["","syncedLeft"],{"blocking":false,"group":"","id":22,"name":"syncedLeft","queueSize":8,"type":0,"waitForMessage":false}],[["","disparity"],{"blocking":false,"group":"","id":21,"name":"disparity","queueSize":8,"type":0,"waitForMessage":false}],[["","debugDispCostDump"],{"blocking":false,"group":"","id":31,"name":"debugDispCostDump","queueSize":8,"type":0,"waitForMessage":false}],[["","depth"],{"blocking":false,"group":"","id":20,"name":"depth","queueSize":8,"type":0,"waitForMessage":false}],[["","pipelineEventOutput"],{"blocking":false,"group":"","id":19,"name":"pipelineEventOutput","queueSize":8,"type":0,"waitForMessage":false}],[["","outConfig"],{"blocking":false,"group":"","id":26,"name":"outConfig","queueSize":8,"type":0,"waitForMessage":false}],[["","right"],{"blocking":true,"group":"","id":18,"name":"right","queueSize":3,"type":3,"waitForMessage":false}],[["","left"],{"blocking":true,"group":"","id":17,"name":"left","queueSize":3,"type":3,"waitForMessage":false}],[["","rectifiedRight"],{"blocking":false,"group":"","id":25,"name":"rectifiedRight","queueSize":8,"type":0,"waitForMessage":false}],[["","inputAlignTo"],{"blocking":false,"group":"","id":16,"name":"inputAlignTo","queueSize":1,"type":3,"waitForMessage":true}],[["","debugExtDispLrCheckIt1"],{"blocking":false,"group":"","id":29,"name":"debugExtDispLrCheckIt1","queueSize":8,"type":0,"waitForMessage":false}],[["","debugDispLrCheckIt1"],{"blocking":false,"group":"","id":27,"name":"debugDispLrCheckIt1","queueSize":8,"type":0,"waitForMessage":false}],[["","inputConfig"],{"blocking":true,"group":"","id":15,"name":"inputConfig","queueSize":3,"type":3,"waitForMessage":false}]],"logLevel":0,"name":"StereoDepth","parentId":-1,"properties":[185,23,185,7,185,12,1,2,136,0,0,122,68,1,0,1,1,10,5,0,190,0,185,11,186,5,3,1,2,4,5,0,0,185,5,0,2,136,0,0,0,63,3,1,185,4,0,3,136,205,204,204,62,3,185,2,0,134,255,255,0,0,185,2,0,133,0,1,185,3,0,50,2,185,2,1,0,185,5,1,128,210,128,200,1,1,185,2,1,128,200,185,6,255,0,1,0,1,1,185,6,1,0,0,55,0,185,3,0,2,127,185,7,1,128,250,129,244,1,128,250,129,244,1,185,6,1,11,10,22,15,5,185,4,1,33,22,63,185,6,20,4,1,8,2,0,2,255,1,0,190,190,190,190,1,185,5,189,0,189,0,190,16,16,0,3,255,255,1,190,1,190,190,190,190,190,190]}],[2,{"alias":"","deviceId":"19443010A1A1872D00","deviceNode":true,"id":2,"ioInfo":[[["dynamicOutputs","0"],{"blocking":false,"group":"dynamicOutputs","id":14,"name":"0","queueSize":8,"type":0,"waitForMessage":false}],[["","pipelineEventOutput"],{"blocking":false,"group":"","id":12,"name":"pipelineEventOutput","queueSize":8,"type":0,"waitForMessage":false}],[["","raw"],{"blocking":false,"group":"","id":13,"name":"raw","queueSize":8,"type":0,"waitForMessage":false}],[["","mockIsp"],{"blocking":true,"group":"","id":11,"name":"mockIsp","queueSize":8,"type":3,"waitForMessage":false}],[["","inputControl"],{"blocking":true,"group":"","id":10,"name":"inputControl","queueSize":3,"type":3,"waitForMessage":false}]],"logLevel":0,"name":"Camera","parentId":-1,"properties":[185,22,185,33,0,3,0,136,0,0,0,0,102,111,185,3,0,0,0,185,5,0,0,0,0,0,185,5,0,0,0,0,0,128,129,2,0,0,0,0,0,0,0,185,3,0,48,121,185,3,133,229,100,134,32,59,0,230,129,23,117,0,0,0,72,124,128,218,0,0,0,72,124,0,186,0,2,255,189,0,255,255,255,255,255,136,0,0,128,191,136,0,0,128,191,0,3,134,0,0,160,0,3,134,0,0,160,0,4,4,4,190,190,186,1,185,6,185,1,184,0,186,2,129,128,2,129,144,1,185,1,184,0,136,0,0,200,65,190,0,190,0]}],[1,{"alias":"","deviceId":"19443010A1A1872D00","deviceNode":true,"id":1,"ioInfo":[[["dynamicOutputs","0"],{"blocking":false,"group":"dynamicOutputs","id":9,"name":"0","queueSize":8,"type":0,"waitForMessage":false}],[["","pipelineEventOutput"],{"blocking":false,"group":"","id":7,"name":"pipelineEventOutput","queueSize":8,"type":0,"waitForMessage":false}],[["","raw"],{"blocking":false,"group":"","id":8,"name":"raw","queueSize":8,"type":0,"waitForMessage":false}],[["","mockIsp"],{"blocking":true,"group":"","id":6,"name":"mockIsp","queueSize":8,"type":3,"waitForMessage":false}],[["","inputControl"],{"blocking":true,"group":"","id":5,"name":"inputControl","queueSize":3,"type":3,"waitForMessage":false}]],"logLevel":0,"name":"Camera","parentId":-1,"properties":[185,22,185,33,0,3,0,136,0,0,0,0,0,0,185,3,0,0,0,185,5,129,64,95,129,218,237,129,229,100,0,3,185,5,0,0,129,102,111,118,0,0,0,0,0,0,0,0,0,0,185,3,0,0,0,185,3,0,0,0,0,0,0,132,129,2,0,0,0,0,128,192,128,164,0,186,0,1,255,189,0,255,255,255,255,255,136,0,0,128,191,136,0,0,128,191,0,3,134,0,0,160,0,3,134,0,0,160,0,4,4,4,190,190,186,1,185,6,185,1,184,0,186,2,129,128,2,129,144,1,185,1,184,0,136,0,0,200,65,190,0,190,0]}],[0,{"alias":"","deviceId":"19443010A1A1872D00","deviceNode":true,"id":0,"ioInfo":[[["dynamicOutputs","0"],{"blocking":false,"group":"dynamicOutputs","id":4,"name":"0","queueSize":8,"type":0,"waitForMessage":false}],[["","pipelineEventOutput"],{"blocking":false,"group":"","id":2,"name":"pipelineEventOutput","queueSize":8,"type":0,"waitForMessage":false}],[["","raw"],{"blocking":false,"group":"","id":3,"name":"raw","queueSize":8,"type":0,"waitForMessage":false}],[["","mockIsp"],{"blocking":true,"group":"","id":1,"name":"mockIsp","queueSize":8,"type":3,"waitForMessage":false}],[["","inputControl"],{"blocking":true,"group":"","id":0,"name":"inputControl","queueSize":3,"type":3,"waitForMessage":false}]],"logLevel":0,"name":"Camera","parentId":-1,"properties":[185,22,185,33,0,3,0,136,0,0,0,0,0,0,185,3,0,0,0,185,5,0,0,0,0,0,185,5,129,190,91,0,0,0,129,190,91,0,0,0,0,0,0,98,110,50,185,3,0,0,0,185,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,186,0,0,255,189,0,255,255,255,255,255,136,0,0,128,191,136,0,0,128,191,0,3,134,0,0,160,0,3,134,0,0,160,0,4,4,4,190,190,186,1,185,6,185,1,184,0,186,2,129,0,5,129,192,3,185,1,184,0,136,0,0,200,65,22,0,1,0]}]]}
 
 */
