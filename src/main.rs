@@ -507,24 +507,660 @@ async fn main() {
                 props.post_processing_memory_slices = 3;
             }
 
-            let mut out = pipe.create_node::<pipeline::XLinkOut>();
-            let xlink_out = pipe.create_output_queue(stereo.output().disparity, &mut out);
-
             pipe.link(cam_left, stereo.input().left);
             pipe.link(cam_right, stereo.input().right);
 
+            let mut out = pipe.create_node::<pipeline::XLinkOut>();
+            let xlink_out = pipe.create_output_queue(stereo.output().disparity, &mut out);
 
             (pipe.build(DEVICE_ID), xlink_out)
         }
 
-        fn rgbd_pipeline() {
-            // might need a imagemanip node
-            todo!()
+        fn rgbd_pipeline() -> (rpc::PipelineSchema, pipeline::OutputQueue<pipeline::CameraFrame, pipeline::RnopDeserializer, pipeline::queue_state::Pending>, pipeline::OutputQueue<pipeline::CameraFrame, pipeline::RnopDeserializer, pipeline::queue_state::Pending>){
+            const CAMERA_SIZE: (u32, u32) = (1280, 720);
+
+            let mut pipe = pipeline::Pipeline::new();
+            let mut camera_left = pipe.create_node::<pipeline::Camera>();
+            let cam_l = camera_left.properties_mut();
+            {
+                // TODO: figure out how exactly these regions are being changed
+                //      - they seem to differ every time its ran
+                //      - maybe from querying the device?
+                cam_l.initial_control.af_region.x = 17586;
+                cam_l.initial_control.af_region.priority = 17586;
+
+                cam_l.initial_control.ae_lock_mode = false;
+                cam_l.initial_control.awb_lock_mode = false;
+
+
+                cam_l.initial_control.strobe_config.enable = false;
+                // control_mode: 132, effect_mode: 60, frame_sync_mode: 25
+                // control_mode: 27, effect_mode: 146, frame_sync_mode: 35
+                cam_l.initial_control.control_mode = 27;
+                cam_l.initial_control.effect_mode = 146;
+                cam_l.initial_control.frame_sync_mode = 35;
+                cam_l.initial_control.enable_hdr = false;
+
+                cam_l.board_socket = crate::rpc::CameraBoardSocket::B;
+            }
+
+            camera_left.request_output(pipeline::CameraCapability {
+                size: pipeline::Capability::new_single(CAMERA_SIZE),
+                fps: pipeline::Capability::new_none(),
+                ty: None,
+                enable_undistortion: None,
+                isp_output: false,
+                resize_mode: pipeline::FrameResize::Crop,
+            });
+
+            let cam_left = camera_left.requested_camera_outputs().next().unwrap();
+
+            let mut camera_right = pipe.create_node::<pipeline::Camera>();
+            let cam_r = camera_right.properties_mut();
+            {
+                cam_r.initial_control.ae_region.x = 48944;
+                cam_r.initial_control.ae_region.y = 31727;
+                cam_r.initial_control.ae_region.width = 24153;
+                cam_r.initial_control.ae_region.height = 0;
+                cam_r.initial_control.ae_region.priority = 3;
+
+                // x: 0, y: 0, width: 28518, height: 118, priority: 0
+                cam_r.initial_control.af_region.width = 28518;
+                cam_r.initial_control.af_region.height = 118;
+
+                cam_r.initial_control.ae_lock_mode = false;
+                cam_r.initial_control.awb_lock_mode = false;
+
+                cam_r.initial_control.strobe_config.enable = false;
+                cam_r.initial_control.contrast = -127;
+                cam_r.initial_control.saturation = 2;
+                // low_power_frame_burst: 176, low_power_frame_discard: 132
+                cam_r.initial_control.low_power_frame_burst = 176;
+                cam_r.initial_control.low_power_frame_discard = 4;
+                cam_r.initial_control.enable_hdr = false;
+
+                cam_r.board_socket = crate::rpc::CameraBoardSocket::C;
+            }
+
+            camera_right.request_output(pipeline::CameraCapability {
+                size: pipeline::Capability::new_single(CAMERA_SIZE),
+                fps: pipeline::Capability::new_none(),
+                ty: None,
+                enable_undistortion: None,
+                isp_output: false,
+                resize_mode: pipeline::FrameResize::Crop,
+            });
+
+            let cam_right = camera_right.requested_camera_outputs().next().unwrap();
+
+
+            let mut stereo = pipe.create_node::<pipeline::StereoDepth>();
+
+            let props = stereo.properties_mut();
+
+            {
+                use crate::pipeline::Filter;
+                props.initial_config.algorithm_control.enable_extended = false;
+                props.initial_config.algorithm_control.enable_left_right_check = true;
+                props.initial_config.algorithm_control.enable_software_left_right_check = false;
+                props.initial_config.algorithm_control.enable_subpixel = false;
+                props.initial_config.algorithm_control.subpixel_fractional_bits = 3;
+
+                props.initial_config.algorithm_control.depth_align = pipeline::DepthAlign::Center;
+
+
+                props.initial_config.post_processing.spatial_filter.enable = false;
+                props.initial_config.post_processing.temporal_filter.enable = false;
+                props.initial_config.post_processing.speckle_filter.enable = false;
+                props.initial_config.post_processing.hole_filling.enable = true;
+                props.initial_config.post_processing.hole_filling.invalidate_disparities = true;
+                props.initial_config.post_processing.adaptive_median_filter.enable = true;
+                props.initial_config.census_transform.enable_mean_mode = true;
+
+                props.initial_config.cost_matching.enable_companding = false;
+                props.initial_config.cost_matching.enable_software_confidence_thresholding = false;
+
+                props.initial_config.cost_aggregation.p1_config.enable_adaptive = true;
+                props.initial_config.cost_aggregation.p2_config.enable_adaptive = true;
+
+                props.initial_config.confidence_metrics.flatness_override = false;
+
+                props.enable_rectification = true;
+                props.enable_runtime_stereo_mode_switch = false;
+                props.keep_aspect_ratio = true;
+                props.focal_length_from_calibration = true;
+                props.enable_frame_sync = true;
+
+                props.initial_config.post_processing.filtering_order = [Filter::Decimation, Filter::Median, Filter::Speckle, Filter::Spatial, Filter::Temporal];
+                props.initial_config.post_processing.median = pipeline::MedianFilter::Kernel7x7;
+                props.initial_config.post_processing.spatial_filter.enable = true;
+                props.initial_config.post_processing.spatial_filter.hole_filling_radius = 1;
+                props.initial_config.post_processing.temporal_filter.enable = true;
+                props.initial_config.post_processing.temporal_filter.alpha = 0.5;
+                props.initial_config.post_processing.threshold_filter.max_range = 15000;
+                props.initial_config.post_processing.speckle_filter.enable = true;
+                props.initial_config.post_processing.speckle_filter.range = 200;
+                props.initial_config.post_processing.decimation_filter.decimation_factor = 2;
+                props.initial_config.post_processing.hole_filling.high_confidence_threshold = 100;
+                props.initial_config.post_processing.hole_filling.fill_confidence_threshold = 210;
+                props.initial_config.post_processing.hole_filling.min_valid_disparity = 3;
+
+                props.initial_config.cost_matching.confidence_threshold = 15;
+
+                props.initial_config.cost_aggregation.p1_config.default_value = 45;
+                props.initial_config.cost_aggregation.p1_config.edge_value = 40;
+                props.initial_config.cost_aggregation.p1_config.smooth_value = 49;
+
+                props.initial_config.cost_aggregation.p2_config.default_value = 95;
+                props.initial_config.cost_aggregation.p2_config.edge_value = 90;
+                props.initial_config.cost_aggregation.p2_config.smooth_value = 99;
+
+                props.initial_config.confidence_metrics.motion_vector_confidence_weight = 10;
+                props.initial_config.confidence_metrics.flatness_confidence_weight = 2;
+                props.initial_config.confidence_metrics.flatness_confidence_threshold = 5;
+
+                props.post_processing_shaves = 3;
+                props.post_processing_memory_slices = 3;
+            }
+
+            pipe.link(cam_left, stereo.input().left);
+            pipe.link(cam_right, stereo.input().right);
+
+            let mut color = pipe.create_node::<pipeline::Camera>();
+
+            {
+                color.properties_mut().board_socket = crate::rpc::CameraBoardSocket::A;
+            }
+
+            color.request_output(pipeline::CameraCapability {
+                size: pipeline::Capability::new_single(CAMERA_SIZE),
+                fps: pipeline::Capability::new_none(),
+                ty: Some(pipeline::FrameType::Rgb888i),
+                enable_undistortion: None,
+                isp_output: false,
+                resize_mode: pipeline::FrameResize::Crop,
+            });
+            let color_cam = color.requested_camera_outputs().next().unwrap();
+
+            let mut align = pipe.create_node::<pipeline::ImageAlign>();
+
+            pipe.link(stereo.output().depth, align.input().input);
+            pipe.link(color_cam.clone(), align.input().align_to);
+
+            let mut depth_out = pipe.create_node::<pipeline::XLinkOut>();
+            let mut color_out = pipe.create_node::<pipeline::XLinkOut>();
+
+            let xlink_depth_out = pipe.create_output_queue(align.output().aligned, &mut depth_out);
+            let xlink_color_out = pipe.create_output_queue(color_cam, &mut color_out);
+
+            (pipe.build(DEVICE_ID), xlink_depth_out, xlink_color_out)
         }
 
-        let (schema, out) = stereo_pipeline();
-        //let (schema, out1, out2) = camera_pipeline_dynamic();
+        fn encoding_pipeline() -> (rpc::PipelineSchema, pipeline::OutputQueue<pipeline::EncodedCameraFrame, pipeline::RnopDeserializer, pipeline::queue_state::Pending>) {
+            const CAMERA_SIZE: (u32, u32) = (1280, 720);
 
+            let mut pipe = pipeline::Pipeline::new();
+
+            let mut color = pipe.create_node::<pipeline::Camera>();
+
+            {
+                color.properties_mut().board_socket = crate::rpc::CameraBoardSocket::A;
+            }
+
+            color.request_output(pipeline::CameraCapability {
+                size: pipeline::Capability::new_single(CAMERA_SIZE),
+                fps: pipeline::Capability::new_none(),
+                ty: Some(pipeline::FrameType::Nv12),
+                enable_undistortion: None,
+                isp_output: false,
+                resize_mode: pipeline::FrameResize::Crop,
+            });
+            let color_cam = color.requested_camera_outputs().next().unwrap();
+
+            let mut enc = pipe.create_node::<pipeline::VideoEncoder>();
+
+            let mut props = enc.properties_mut();
+
+            {
+                props.profile = pipeline::EncoderProfile::H265Main;
+                props.rate_ctrl_mode = pipeline::RateControlMode::Vbr;
+            }
+
+            let mut out = pipe.create_node::<pipeline::XLinkOut>();
+
+            pipe.link(color_cam, enc.input());
+            let xlink_out = pipe.create_output_queue(enc.output().out, &mut out);
+
+            (pipe.build(DEVICE_ID), xlink_out)
+        }
+
+        fn manip_pipeline() -> (rpc::PipelineSchema, pipeline::OutputQueue<pipeline::CameraFrame, pipeline::RnopDeserializer, pipeline::queue_state::Pending>) {
+            const CAMERA_SIZE: (u32, u32) = (1280, 720);
+
+            let mut pipe = pipeline::Pipeline::new();
+
+            let mut color = pipe.create_node::<pipeline::Camera>();
+
+            {
+                color.properties_mut().board_socket = crate::rpc::CameraBoardSocket::A;
+            }
+
+            color.request_output(pipeline::CameraCapability {
+                size: pipeline::Capability::new_single(CAMERA_SIZE),
+                fps: pipeline::Capability::new_none(),
+                ty: Some(pipeline::FrameType::Rgb888i),
+                enable_undistortion: None,
+                isp_output: false,
+                resize_mode: pipeline::FrameResize::Crop,
+            });
+            let color_cam = color.requested_camera_outputs().next().unwrap();
+
+            let mut manip = pipe.create_node::<pipeline::ImageManip>();
+            let mprops = manip.properties_mut();
+
+            {
+                mprops.output_frame_size = (CAMERA_SIZE.0 * CAMERA_SIZE.1 * 2) as _;
+                mprops.initial_config.output_frame_ty = pipeline::FrameType::Nv12;
+            }
+
+            pipe.link(color_cam, manip.input().1);
+
+
+            let mut out = pipe.create_node::<pipeline::XLinkOut>();
+            let xlink_out = pipe.create_output_queue(manip.output(), &mut out);
+
+            (pipe.build(DEVICE_ID), xlink_out)
+        }
+
+        fn pointcloud_pipeline()-> (rpc::PipelineSchema, pipeline::OutputQueue<pipeline::PointcloudData, pipeline::RnopDeserializer, pipeline::queue_state::Pending>) {
+            const CAMERA_SIZE: (u32, u32) = (1280, 720);
+
+            let mut pipe = pipeline::Pipeline::new();
+            let mut camera_left = pipe.create_node::<pipeline::Camera>();
+            let cam_l = camera_left.properties_mut();
+            {
+                // TODO: figure out how exactly these regions are being changed
+                //      - they seem to differ every time its ran
+                //      - maybe from querying the device?
+                cam_l.initial_control.af_region.x = 17586;
+                cam_l.initial_control.af_region.priority = 17586;
+
+                cam_l.initial_control.ae_lock_mode = false;
+                cam_l.initial_control.awb_lock_mode = false;
+
+
+                cam_l.initial_control.strobe_config.enable = false;
+                // control_mode: 132, effect_mode: 60, frame_sync_mode: 25
+                // control_mode: 27, effect_mode: 146, frame_sync_mode: 35
+                cam_l.initial_control.control_mode = 27;
+                cam_l.initial_control.effect_mode = 146;
+                cam_l.initial_control.frame_sync_mode = 35;
+                cam_l.initial_control.enable_hdr = false;
+
+                cam_l.board_socket = crate::rpc::CameraBoardSocket::B;
+            }
+
+            camera_left.request_output(pipeline::CameraCapability {
+                size: pipeline::Capability::new_single(CAMERA_SIZE),
+                fps: pipeline::Capability::new_none(),
+                ty: None,
+                enable_undistortion: None,
+                isp_output: false,
+                resize_mode: pipeline::FrameResize::Crop,
+            });
+
+            let cam_left = camera_left.requested_camera_outputs().next().unwrap();
+
+            let mut camera_right = pipe.create_node::<pipeline::Camera>();
+            let cam_r = camera_right.properties_mut();
+            {
+                cam_r.initial_control.ae_region.x = 48944;
+                cam_r.initial_control.ae_region.y = 31727;
+                cam_r.initial_control.ae_region.width = 24153;
+                cam_r.initial_control.ae_region.height = 0;
+                cam_r.initial_control.ae_region.priority = 3;
+
+                // x: 0, y: 0, width: 28518, height: 118, priority: 0
+                cam_r.initial_control.af_region.width = 28518;
+                cam_r.initial_control.af_region.height = 118;
+
+                cam_r.initial_control.ae_lock_mode = false;
+                cam_r.initial_control.awb_lock_mode = false;
+
+                cam_r.initial_control.strobe_config.enable = false;
+                cam_r.initial_control.contrast = -127;
+                cam_r.initial_control.saturation = 2;
+                // low_power_frame_burst: 176, low_power_frame_discard: 132
+                cam_r.initial_control.low_power_frame_burst = 176;
+                cam_r.initial_control.low_power_frame_discard = 4;
+                cam_r.initial_control.enable_hdr = false;
+
+                cam_r.board_socket = crate::rpc::CameraBoardSocket::C;
+            }
+
+            camera_right.request_output(pipeline::CameraCapability {
+                size: pipeline::Capability::new_single(CAMERA_SIZE),
+                fps: pipeline::Capability::new_none(),
+                ty: None,
+                enable_undistortion: None,
+                isp_output: false,
+                resize_mode: pipeline::FrameResize::Crop,
+            });
+
+            let cam_right = camera_right.requested_camera_outputs().next().unwrap();
+
+
+            let mut stereo = pipe.create_node::<pipeline::StereoDepth>();
+
+            let props = stereo.properties_mut();
+
+            {
+                use crate::pipeline::Filter;
+                props.initial_config.algorithm_control.enable_extended = false;
+                props.initial_config.algorithm_control.enable_left_right_check = true;
+                props.initial_config.algorithm_control.enable_software_left_right_check = false;
+                props.initial_config.algorithm_control.enable_subpixel = false;
+                props.initial_config.algorithm_control.subpixel_fractional_bits = 3;
+                props.initial_config.post_processing.spatial_filter.enable = false;
+                props.initial_config.post_processing.temporal_filter.enable = false;
+                props.initial_config.post_processing.speckle_filter.enable = false;
+                props.initial_config.post_processing.hole_filling.enable = true;
+                props.initial_config.post_processing.hole_filling.invalidate_disparities = true;
+                props.initial_config.post_processing.adaptive_median_filter.enable = true;
+                props.initial_config.census_transform.enable_mean_mode = true;
+
+                props.initial_config.cost_matching.enable_companding = false;
+                props.initial_config.cost_matching.enable_software_confidence_thresholding = false;
+
+                props.initial_config.cost_aggregation.p1_config.enable_adaptive = true;
+                props.initial_config.cost_aggregation.p2_config.enable_adaptive = true;
+
+                props.initial_config.confidence_metrics.flatness_override = false;
+
+                props.enable_rectification = true;
+                props.enable_runtime_stereo_mode_switch = false;
+                props.keep_aspect_ratio = true;
+                props.focal_length_from_calibration = true;
+                props.enable_frame_sync = true;
+
+                props.initial_config.post_processing.filtering_order = [Filter::Decimation, Filter::Median, Filter::Speckle, Filter::Spatial, Filter::Temporal];
+                props.initial_config.post_processing.median = pipeline::MedianFilter::Kernel7x7;
+                props.initial_config.post_processing.spatial_filter.enable = true;
+                props.initial_config.post_processing.spatial_filter.hole_filling_radius = 1;
+                props.initial_config.post_processing.temporal_filter.enable = true;
+                props.initial_config.post_processing.temporal_filter.alpha = 0.5;
+                props.initial_config.post_processing.threshold_filter.max_range = 15000;
+                props.initial_config.post_processing.speckle_filter.enable = true;
+                props.initial_config.post_processing.speckle_filter.range = 200;
+                props.initial_config.post_processing.decimation_filter.decimation_factor = 2;
+                props.initial_config.post_processing.hole_filling.high_confidence_threshold = 100;
+                props.initial_config.post_processing.hole_filling.fill_confidence_threshold = 210;
+                props.initial_config.post_processing.hole_filling.min_valid_disparity = 3;
+
+                props.initial_config.cost_matching.confidence_threshold = 15;
+
+                props.initial_config.cost_aggregation.p1_config.default_value = 45;
+                props.initial_config.cost_aggregation.p1_config.edge_value = 40;
+                props.initial_config.cost_aggregation.p1_config.smooth_value = 49;
+
+                props.initial_config.cost_aggregation.p2_config.default_value = 95;
+                props.initial_config.cost_aggregation.p2_config.edge_value = 90;
+                props.initial_config.cost_aggregation.p2_config.smooth_value = 99;
+
+                props.initial_config.confidence_metrics.motion_vector_confidence_weight = 10;
+                props.initial_config.confidence_metrics.flatness_confidence_weight = 2;
+                props.initial_config.confidence_metrics.flatness_confidence_threshold = 5;
+
+                props.post_processing_shaves = 3;
+                props.post_processing_memory_slices = 3;
+            }
+
+            pipe.link(cam_left, stereo.input().left);
+            pipe.link(cam_right, stereo.input().right);
+
+            let mut pointcloud = pipe.create_node::<pipeline::Pointcloud>();
+            pipe.link(stereo.output().depth, pointcloud.input().1);
+
+            let mut out = pipe.create_node::<pipeline::XLinkOut>();
+            let xlink_out = pipe.create_output_queue(pointcloud.output().0, &mut out);
+
+            (pipe.build(DEVICE_ID), xlink_out)
+        }
+
+        fn encoded_rgbd_pipeline() -> (rpc::PipelineSchema, pipeline::OutputQueue<pipeline::CameraFrame, pipeline::RnopDeserializer, pipeline::queue_state::Pending>, pipeline::OutputQueue<pipeline::EncodedCameraFrame, pipeline::RnopDeserializer, pipeline::queue_state::Pending>) {
+            const CAMERA_SIZE: (u32, u32) = (1280, 720);
+
+            let mut pipe = pipeline::Pipeline::new();
+            let mut camera_left = pipe.create_node::<pipeline::Camera>();
+            let cam_l = camera_left.properties_mut();
+            {
+                // TODO: figure out how exactly these regions are being changed
+                //      - they seem to differ every time its ran
+                //      - maybe from querying the device?
+                cam_l.initial_control.af_region.x = 17586;
+                cam_l.initial_control.af_region.priority = 17586;
+
+                cam_l.initial_control.ae_lock_mode = false;
+                cam_l.initial_control.awb_lock_mode = false;
+
+
+                cam_l.initial_control.strobe_config.enable = false;
+                // control_mode: 132, effect_mode: 60, frame_sync_mode: 25
+                // control_mode: 27, effect_mode: 146, frame_sync_mode: 35
+                cam_l.initial_control.control_mode = 27;
+                cam_l.initial_control.effect_mode = 146;
+                cam_l.initial_control.frame_sync_mode = 35;
+                cam_l.initial_control.enable_hdr = false;
+
+                cam_l.board_socket = crate::rpc::CameraBoardSocket::B;
+            }
+
+            camera_left.request_output(pipeline::CameraCapability {
+                size: pipeline::Capability::new_single(CAMERA_SIZE),
+                fps: pipeline::Capability::new_none(),
+                ty: None,
+                enable_undistortion: None,
+                isp_output: false,
+                resize_mode: pipeline::FrameResize::Crop,
+            });
+
+            let cam_left = camera_left.requested_camera_outputs().next().unwrap();
+
+            let mut camera_right = pipe.create_node::<pipeline::Camera>();
+            let cam_r = camera_right.properties_mut();
+            {
+                cam_r.initial_control.ae_region.x = 48944;
+                cam_r.initial_control.ae_region.y = 31727;
+                cam_r.initial_control.ae_region.width = 24153;
+                cam_r.initial_control.ae_region.height = 0;
+                cam_r.initial_control.ae_region.priority = 3;
+
+                // x: 0, y: 0, width: 28518, height: 118, priority: 0
+                cam_r.initial_control.af_region.width = 28518;
+                cam_r.initial_control.af_region.height = 118;
+
+                cam_r.initial_control.ae_lock_mode = false;
+                cam_r.initial_control.awb_lock_mode = false;
+
+                cam_r.initial_control.strobe_config.enable = false;
+                cam_r.initial_control.contrast = -127;
+                cam_r.initial_control.saturation = 2;
+                // low_power_frame_burst: 176, low_power_frame_discard: 132
+                cam_r.initial_control.low_power_frame_burst = 176;
+                cam_r.initial_control.low_power_frame_discard = 4;
+                cam_r.initial_control.enable_hdr = false;
+
+                cam_r.board_socket = crate::rpc::CameraBoardSocket::C;
+            }
+
+            camera_right.request_output(pipeline::CameraCapability {
+                size: pipeline::Capability::new_single(CAMERA_SIZE),
+                fps: pipeline::Capability::new_none(),
+                ty: None,
+                enable_undistortion: None,
+                isp_output: false,
+                resize_mode: pipeline::FrameResize::Crop,
+            });
+
+            let cam_right = camera_right.requested_camera_outputs().next().unwrap();
+
+
+            let mut stereo = pipe.create_node::<pipeline::StereoDepth>();
+
+            let props = stereo.properties_mut();
+
+            {
+                use crate::pipeline::Filter;
+                props.initial_config.algorithm_control.enable_extended = false;
+                props.initial_config.algorithm_control.enable_left_right_check = true;
+                props.initial_config.algorithm_control.enable_software_left_right_check = false;
+                props.initial_config.algorithm_control.enable_subpixel = false;
+                props.initial_config.algorithm_control.subpixel_fractional_bits = 3;
+
+                props.initial_config.algorithm_control.depth_align = pipeline::DepthAlign::Center;
+
+
+                props.initial_config.post_processing.spatial_filter.enable = false;
+                props.initial_config.post_processing.temporal_filter.enable = false;
+                props.initial_config.post_processing.speckle_filter.enable = false;
+                props.initial_config.post_processing.hole_filling.enable = true;
+                props.initial_config.post_processing.hole_filling.invalidate_disparities = true;
+                props.initial_config.post_processing.adaptive_median_filter.enable = true;
+                props.initial_config.census_transform.enable_mean_mode = true;
+
+                props.initial_config.cost_matching.enable_companding = false;
+                props.initial_config.cost_matching.enable_software_confidence_thresholding = false;
+
+                props.initial_config.cost_aggregation.p1_config.enable_adaptive = true;
+                props.initial_config.cost_aggregation.p2_config.enable_adaptive = true;
+
+                props.initial_config.confidence_metrics.flatness_override = false;
+
+                props.enable_rectification = true;
+                props.enable_runtime_stereo_mode_switch = false;
+                props.keep_aspect_ratio = true;
+                props.focal_length_from_calibration = true;
+                props.enable_frame_sync = true;
+
+                props.initial_config.post_processing.filtering_order = [Filter::Decimation, Filter::Median, Filter::Speckle, Filter::Spatial, Filter::Temporal];
+                props.initial_config.post_processing.median = pipeline::MedianFilter::Kernel7x7;
+                props.initial_config.post_processing.spatial_filter.enable = true;
+                props.initial_config.post_processing.spatial_filter.hole_filling_radius = 1;
+                props.initial_config.post_processing.temporal_filter.enable = true;
+                props.initial_config.post_processing.temporal_filter.alpha = 0.5;
+                props.initial_config.post_processing.threshold_filter.max_range = 15000;
+                props.initial_config.post_processing.speckle_filter.enable = true;
+                props.initial_config.post_processing.speckle_filter.range = 200;
+                props.initial_config.post_processing.decimation_filter.decimation_factor = 2;
+                props.initial_config.post_processing.hole_filling.high_confidence_threshold = 100;
+                props.initial_config.post_processing.hole_filling.fill_confidence_threshold = 210;
+                props.initial_config.post_processing.hole_filling.min_valid_disparity = 3;
+
+                props.initial_config.cost_matching.confidence_threshold = 15;
+
+                props.initial_config.cost_aggregation.p1_config.default_value = 45;
+                props.initial_config.cost_aggregation.p1_config.edge_value = 40;
+                props.initial_config.cost_aggregation.p1_config.smooth_value = 49;
+
+                props.initial_config.cost_aggregation.p2_config.default_value = 95;
+                props.initial_config.cost_aggregation.p2_config.edge_value = 90;
+                props.initial_config.cost_aggregation.p2_config.smooth_value = 99;
+
+                props.initial_config.confidence_metrics.motion_vector_confidence_weight = 10;
+                props.initial_config.confidence_metrics.flatness_confidence_weight = 2;
+                props.initial_config.confidence_metrics.flatness_confidence_threshold = 5;
+
+                props.post_processing_shaves = 3;
+                props.post_processing_memory_slices = 3;
+            }
+
+            pipe.link(cam_left, stereo.input().left);
+            pipe.link(cam_right, stereo.input().right);
+
+            let mut color = pipe.create_node::<pipeline::Camera>();
+
+            {
+                color.properties_mut().board_socket = crate::rpc::CameraBoardSocket::A;
+            }
+
+            color.request_output(pipeline::CameraCapability {
+                size: pipeline::Capability::new_single(CAMERA_SIZE),
+                fps: pipeline::Capability::new_none(),
+                ty: Some(pipeline::FrameType::Nv12),
+                enable_undistortion: Some(true),
+                isp_output: false,
+                resize_mode: pipeline::FrameResize::Crop,
+            });
+            let color_cam = color.requested_camera_outputs().next().unwrap();
+
+            let mut align = pipe.create_node::<pipeline::ImageAlign>();
+
+            pipe.link(stereo.output().depth, align.input().input);
+            pipe.link(color_cam.clone(), align.input().align_to);
+
+            let mut depth_out = pipe.create_node::<pipeline::XLinkOut>();
+            let mut color_out = pipe.create_node::<pipeline::XLinkOut>();
+
+            let xlink_depth_out = pipe.create_output_queue(align.output().aligned, &mut depth_out);
+
+            let mut enc = pipe.create_node::<pipeline::VideoEncoder>();
+
+            let mut props = enc.properties_mut();
+
+            {
+                props.profile = pipeline::EncoderProfile::H265Main;
+                props.rate_ctrl_mode = pipeline::RateControlMode::Vbr;
+            }
+            pipe.link(color_cam, enc.input());
+
+            let xlink_color_out = pipe.create_output_queue(enc.output().out, &mut color_out);
+
+            (pipe.build(DEVICE_ID), xlink_depth_out, xlink_color_out)
+        }
+
+        fn sync_pipeline() -> (rpc::PipelineSchema, pipeline::OutputQueue<pipeline::MessageGroup, pipeline::RnopDeserializer, pipeline::queue_state::Pending>) {
+            const CAMERA_SIZE: (u32, u32) = (1280, 720);
+            let mut pipe = pipeline::Pipeline::new();
+            //let logger = pipe.create_node::<pipeline::SystemLogger>();
+            let mut color_cam = pipe.create_node::<pipeline::Camera>();
+
+            color_cam.request_output(pipeline::CameraCapability {
+                size: pipeline::Capability::new_single(CAMERA_SIZE),
+                fps: pipeline::Capability::new_none(),
+                ty: None,
+                enable_undistortion: None,
+                isp_output: true,
+                resize_mode: pipeline::FrameResize::Crop,
+            });
+
+            let color = color_cam.requested_camera_outputs().next().unwrap();
+
+            let mut imu = pipe.create_node::<pipeline::Imu>();
+
+
+            imu.properties_mut().enable_sensor(pipeline::ImuSensorKind::Accelerometer, 400);
+            imu.properties_mut().enable_sensor(pipeline::ImuSensorKind::GyroscopeCalibrated, 400);
+
+            let group = pipeline::MsgGroup::new()
+                .with_msg(color, "image")
+                .with_msg(imu.output(), "imu");
+
+            let sync = pipe.create_sync_node(group);
+
+            sync.register(&mut pipe);
+
+            let mut out = pipe.create_node::<pipeline::XLinkOut>();
+            let xlink_out = pipe.create_output_queue(sync.output(), &mut out);
+            (pipe.build(DEVICE_ID), xlink_out)
+        }
+
+        //let (schema, out) = stereo_pipeline();
+        //let (schema, out1, out2) = camera_pipeline_dynamic();
+        //let (schema, depth_out, color_out) = rgbd_pipeline();
+        //let (schema, out) = pointcloud_pipeline();
+        //let (schema, out) = manip_pipeline();
+        //let (schema, depth, color) = encoded_rgbd_pipeline();
+        let (schema, out) = sync_pipeline();
 
         //connection.create_stream("__x_0_out", bootloader::MAX_PACKET_SIZE).await.unwrap();
 
@@ -541,14 +1177,17 @@ async fn main() {
         println!("{ret:?}");
 
         /*
-        let mut queue1 = connection.wait_for_output_queue(out1).await;
-        let mut queue2 = connection.wait_for_output_queue(out2).await;
+        let mut depth_queue = connection.wait_for_output_queue(depth).await;
+        let mut color_queue = connection.wait_for_output_queue(color).await;
         */
 
 
-        println!("out: {out:?}");
-
+        //println!("out: {out:?}");
         let mut queue = connection.wait_for_output_queue(out).await;
+        /*
+        let mut depth_queue = connection.wait_for_output_queue(depth_out).await;
+        let mut color_queue = connection.wait_for_output_queue(color_out).await;
+        */
 
         println!("\n\ngot output queue\n\n");
 
@@ -567,14 +1206,53 @@ async fn main() {
             tokio::select! {
                 msgs = logger.read() => {
                     for msg in msgs {
-                        if matches!(msg.log_level, LogLevel::Error | LogLevel::Warn | LogLevel::Critical | LogLevel::Info) {
+                        //if matches!(msg.log_level, LogLevel::Error | LogLevel::Warn | LogLevel::Critical | LogLevel::Info) {
                             println!("logger: {msg:?}");
-                        }
+                        //}
                     }
                 }
+                /*
+                res = depth_queue.read() => {
+                    let res = res.unwrap();
+                    //println!("depth: {res:?}");
+                    println!("depth recv");
+                }
+                res = color_queue.read() => {
+                    let res = res.unwrap();
+                    //println!("color: {res:?}");
+                    println!("color recv");
+                }
+                */
                 res = queue.read() => {
+                    let res = res.unwrap();
+                    println!("{res:?}");
+                }
+                /*
+                res = queue.read_raw() => {
+                    /*
+                    let res = res.unwrap();
+                    match res.ty {
+                        pipeline::DataType::MessageGroup => {
+                            let msg = <pipeline::MessageGroup as pipeline::Deserialize<pipeline::RnopDeserializer>>::deserialize(&res.metadata).unwrap();
+                            println!("msg group: {msg:?}");
+                        }
+                        ty => {
+                            println!("{}, {}, {:?}", res.metadata.len(), res.buffer.len(), ty);
+                        }
+                    }
+                    */
+                }
+                */
+                /*
+                res = queue.read() => {
+                    let res = res.unwrap();
+                    println!("{res:?}");
+                }
+                */
+                /*
+                res = depth_queue.read() => {
                     let frame = res.unwrap();
-
+                    println!("received depth");
                     let mat = frame.as_mat();
 
                     let mut local_max = 0.;
@@ -594,9 +1272,15 @@ async fn main() {
                     opencv::imgproc::apply_color_map(&normalized, &mut colorized, opencv::imgproc::COLORMAP_JET).unwrap();
 
                     highgui::imshow(colored_window, &colorized).unwrap();
+                    highgui::wait_key(1);
+                }
+                res = color_queue.read() => {
+                    let frame = res.unwrap();
+                    let mat = frame.as_mat();
                     highgui::imshow(window, &*mat).unwrap();
                     highgui::wait_key(1);
                 }
+                */
             }
         }
     }
@@ -2032,7 +2716,7 @@ mod pipeline {
     }
 
     #[derive(Debug)]
-    struct InternalNodeInfo<'a> {
+    pub(crate) struct InternalNodeInfo<'a> {
         name: &'a str,
         alias: Option<&'a str>,
         properties: Vec<u8>,
@@ -2122,7 +2806,7 @@ mod pipeline {
     impl <T: serde::de::DeserializeOwned, D: Deserializer> Deserialize<D> for T {}
 
     pub trait Node {
-        type Input: IoRegister + Inputs + Default;
+        type Input: IoRegister + Inputs /*+ Default*/;
         type Output: IoRegister + Outputs + Default;
 
         type Properties: Default + Serialize<RnopSerializer>;
@@ -2149,6 +2833,7 @@ mod pipeline {
     }
 
     impl NotAny for PipelineEvent {}
+    impl NotMessageGroup for PipelineEvent {}
 
     impl StaticIoDesc for PipelineEvent {
         //TODO
@@ -2212,6 +2897,7 @@ mod pipeline {
     }
 
     // for registering to the pipeline
+    #[derive(Debug)]
     struct IoInfo<'a, 'b> {
         current_id: &'b mut u32,
         inner: HashMap<(Option<&'a str>, &'a str), InternalIoInfo<'a>>
@@ -2246,6 +2932,10 @@ mod pipeline {
     }
 
     trait IoRegister {
+        fn register<'a, 'b>(&'a self, info: &mut IoInfo<'a, 'b>);
+    }
+
+    trait SyncIoRegister {
         fn register<'a, 'b>(&'a self, info: &mut IoInfo<'a, 'b>);
     }
 
@@ -2349,13 +3039,40 @@ mod pipeline {
         input: &'a Input<T, S>,
     }
 
-    #[derive(Clone, Copy)]
+    #[derive(Copy)]
     pub struct OutputRef<'a, P: Node, T: IoDesc + IoDeserializeable<D>, D: Deserializer> {
         node: &'a NodeT<P>,
         output: &'a Output<T, D>,
     }
 
-    pub struct Input<T: IoDesc + IoSerializeable<S>, S: Serializer> {
+    impl <'a, P: Node, T: IoDesc + IoDeserializeable<D>, D: Deserializer> OutputRef<'a, P, T, D> {
+        fn link_ref(&self) -> LinkRef<'a, T> {
+            LinkRef {
+                id: self.node.id,
+                link: &self.output.output,
+            }
+        }
+    }
+
+    impl <'a, P: Node, T: IoDesc + IoSerializeable<S>, S: Serializer> InputRef<'a, P, T, S> {
+        fn link_ref(&self) -> LinkRef<'a, T> {
+            LinkRef {
+                id: self.node.id,
+                link: &self.input.input,
+            }
+        }
+    }
+
+    impl <'a, P: Node, T: IoDesc + IoDeserializeable<D>, D: Deserializer> Clone for OutputRef<'a, P, T, D> {
+        fn clone(&self) -> Self {
+            Self {
+                node: self.node,
+                output: self.output,
+            }
+        }
+    }
+
+    pub struct Input<T: IoDesc /*+ IoSerializeable<S>*/, S: Serializer> {
         input: T::InfoStorage,
         conf: IoDescConf,
         _pd: core::marker::PhantomData<S>,
@@ -2391,7 +3108,7 @@ mod pipeline {
         node_type: NodeType,
     }
 
-    pub struct Output<T: IoDesc + IoDeserializeable<D>, D: Deserializer> {
+    pub struct Output<T: IoDesc /*+ IoDeserializeable<D>*/, D: Deserializer> {
         output: T::InfoStorage,
         conf: IoDescConf,
         _pd: core::marker::PhantomData<D>,
@@ -2408,8 +3125,8 @@ mod pipeline {
     }
 
     #[derive(Default)]
-    struct DynamicStorage {
-        name: String,
+    struct DynamicStorage<S> {
+        name: S,
     }
 
     trait DynamicGroup {
@@ -2426,7 +3143,7 @@ mod pipeline {
             T::NODE_TYPE
         }
 
-        type InfoStorage = DynamicStorage;
+        type InfoStorage = DynamicStorage<String>;
     }
 
     // these need to move to sealed types if actually using them
@@ -2524,23 +3241,195 @@ mod pipeline {
         }
     }
 
-    impl <T: IoDeserializeable<D>, D: Deserializer> OutputQueue<T, D, queue_state::Ready> {
-        /// this is a whole lot of trait magic to be able to either output `Metadata` or `(Metadata, Vec<u8>)` depending on the type
-        pub async fn read(&mut self) -> Result<<(T::Metadata, T::Output) as Simplify<D, T>>::Out, D::Error> where (<T as IoDeserializeable<D>>::Metadata, <T as IoDeserializeable<D>>::Output): Simplify<D, T> {
-            let ReadRaw { metadata, buffer } = self.read_raw().await.unwrap();
-
-            let metadata = D::deserialize::<T::Metadata>(&metadata)?;
-
-            let out = <(<T as IoDeserializeable<D>>::Metadata, <T as IoDeserializeable<D>>::Output)>::simplify(metadata, buffer);
-
-            Ok(out)
+    impl <D: Deserializer> Simplify<D, EncodedCameraFrame> for (EncodedCameraFrame, EncodedFrame) {
+        type Out = EncodedFrame;
+        fn simplify(this: EncodedCameraFrame, bytes: Vec<u8>) -> Self::Out {
+            EncodedFrame {
+                metadata: this,
+                bytes,
+            }
         }
+    }
+
+    /*
+    impl <D: Deserializer> Simplify<D, MessageGroup> for (MessageGroup, GroupedMessage) {
+        type Out = Result<GroupedMessage, D::Error>;
+        fn simplify(this: , bytes: Vec<u8>) -> Self::Out {
+            todo!()
+        }
+
+    }
+    */
+
+    impl <D: Deserializer> Simplify<D, PointcloudData> for (PointcloudData, PointcloudFrame) {
+        type Out = PointcloudFrame;
+        fn simplify(this: PointcloudData, bytes: Vec<u8>) -> Self::Out {
+            // TODO: need to convert them to points here.
+            // or... could just keep them as bytes then send them back over ros...?
+            PointcloudFrame {
+                metadata: this,
+                points: bytes,
+            }
+        }
+    }
+
+    impl <D: Deserializer, T: FromReadRaw<D>> OutputQueue<T, D, queue_state::Ready> {
+        pub async fn read(&mut self) -> Result<<T as FromReadRaw<D>>::Output, D::Error> {
+            let raw = self.read_raw().await.unwrap();
+            T::from_raw(raw)
+        }
+    }
+
+    pub trait FromReadRaw<D: Deserializer> {
+        type Output;
+        fn from_raw(raw: ReadRaw) -> Result<Self::Output, D::Error>;
+    }
+
+    trait NotMessageGroup {}
+
+    impl <D: Deserializer, T: IoDeserializeable<D> + NotMessageGroup> FromReadRaw<D> for T where (<T as IoDeserializeable<D>>::Metadata, <T as IoDeserializeable<D>>::Output): Simplify<D, T> {
+        type Output = <(T::Metadata, T::Output) as Simplify<D, T>>::Out;
+        fn from_raw(raw: ReadRaw) -> Result<Self::Output, D::Error> {
+            try_from_raw(raw)
+        }
+    }
+
+    impl <D: Deserializer> FromReadRaw<D> for MessageGroup {
+        type Output = GroupedMessage;
+        fn from_raw(raw: ReadRaw) -> Result<Self::Output, D::Error> {
+            GroupedMessage::from_raw::<D>(raw)
+        }
+    }
+
+    fn try_from_raw<D: Deserializer, T: IoDeserializeable<D>>(read_raw: ReadRaw) -> Result<<(T::Metadata, T::Output) as Simplify<D, T>>::Out, D::Error> where (<T as IoDeserializeable<D>>::Metadata, <T as IoDeserializeable<D>>::Output): Simplify<D, T> {
+        let metadata = D::deserialize::<T::Metadata>(&read_raw.metadata)?;
+
+        let out = <(<T as IoDeserializeable<D>>::Metadata, <T as IoDeserializeable<D>>::Output)>::simplify(metadata, read_raw.buffer);
+
+        Ok(out)
     }
 
     #[derive(Debug)]
     pub struct ReadRaw {
         pub metadata: Vec<u8>,
         pub buffer: Vec<u8>,
+        pub ty: DataType,
+    }
+
+    #[derive(serde_repr::Serialize_repr, serde_repr::Deserialize_repr, Debug)]
+    #[repr(i32)]
+    pub enum DataType {
+        Any = 0,
+        Buffer = 1,
+        ImgFrame = 2,
+        EncodedFrame = 3,
+        SegmentationMask = 4,
+        GateControl = 5,
+        NNData = 6,
+        ImageManipConfig = 7,
+        CameraControl = 8,
+        ImgDetections = 9,
+        SpacialImgDetections = 10,
+        SystemInformation = 11,
+        SystemInformationRvc4 = 12,
+        SpacialLocationCalculationConfig = 13,
+        SpacialLocationCalculationData = 14,
+        EdgeDetectorConfig = 15,
+        AprilTagConfig = 16,
+        AprilTags = 17,
+        Tracklets = 18,
+        ImuData = 19,
+        StereoDepthConfig = 20,
+        NeuralDepthConfig = 21,
+        FeatureTrackerConfig = 22,
+        ThermalConfig = 23,
+        TofConfig = 24,
+        TrackedFeatures = 25,
+        BenchmarkReport = 26,
+        MessageGroup = 27,
+        MapData = 28,
+        TransformData = 29,
+        PointcloudConfig = 30,
+        PointcloudData = 31,
+        RgbdData = 32,
+        ImageAlignConfig = 33,
+        ImgAnnotations = 34,
+        ImageFiltersConfig = 35,
+        TofDepthConfidenceFilterConfig = 36,
+        ObjectTrackerConfig = 37,
+        DynamicCalibrationControl = 38,
+        DynamicCalibrationResult = 39,
+        AutoCalibrationConfig = 40,
+        AutoCalibrationResult = 41,
+        CalibrationQuality = 42,
+        CalibrationMetrics = 43,
+        CoverageData = 44,
+        SegmentationParserConfig = 45,
+        PipelineEvent = 46,
+        PipelineState = 47,
+        PipelineEventAggregationConfig = 48,
+        VppConfig = 49,
+        PacketizedData = 50,
+    }
+
+    impl TryFrom<u32> for DataType {
+        type Error = u32;
+        fn try_from(this: u32) -> Result<DataType, u32> {
+            Ok(match this {
+                0 => Self::Any,
+                1 => Self::Buffer ,
+                2 => Self::ImgFrame ,
+                3 => Self::EncodedFrame ,
+                4 => Self::SegmentationMask ,
+                5 => Self::GateControl ,
+                6 => Self::NNData ,
+                7 => Self::ImageManipConfig ,
+                8 => Self::CameraControl ,
+                9 => Self::ImgDetections ,
+                10 => Self::SpacialImgDetections ,
+                11 => Self::SystemInformation ,
+                12 => Self::SystemInformationRvc4 ,
+                13 => Self::SpacialLocationCalculationConfig ,
+                14 => Self::SpacialLocationCalculationData ,
+                15 => Self::EdgeDetectorConfig ,
+                16 => Self::AprilTagConfig ,
+                17 => Self::AprilTags ,
+                18 => Self::Tracklets ,
+                19 => Self::ImuData ,
+                20 => Self::StereoDepthConfig ,
+                21 => Self::NeuralDepthConfig ,
+                22 => Self::FeatureTrackerConfig ,
+                23 => Self::ThermalConfig ,
+                24 => Self::TofConfig ,
+                25 => Self::TrackedFeatures ,
+                26 => Self::BenchmarkReport ,
+                27 => Self::MessageGroup ,
+                28 => Self::MapData ,
+                29 => Self::TransformData ,
+                30 => Self::PointcloudConfig ,
+                31 => Self::PointcloudData ,
+                32 => Self::RgbdData ,
+                33 => Self::ImageAlignConfig ,
+                34 => Self::ImgAnnotations ,
+                35 => Self::ImageFiltersConfig ,
+                36 => Self::TofDepthConfidenceFilterConfig ,
+                37 => Self::ObjectTrackerConfig ,
+                38 => Self::DynamicCalibrationControl ,
+                39 => Self::DynamicCalibrationResult ,
+                40 => Self::AutoCalibrationConfig ,
+                41 => Self::AutoCalibrationResult ,
+                42 => Self::CalibrationQuality ,
+                43 => Self::CalibrationMetrics,
+                44 => Self::CoverageData,
+                45 => Self::SegmentationParserConfig,
+                46 => Self::PipelineEvent,
+                47 => Self::PipelineState,
+                48 => Self::PipelineEventAggregationConfig,
+                49 => Self::VppConfig,
+                50 => Self::PacketizedData,
+                r => return Err(r),
+            })
+        }
     }
 
     impl <T, D> OutputQueue<T, D, queue_state::Ready> {
@@ -2549,8 +3438,9 @@ mod pipeline {
 
             struct Header {
                 metadata_size: u32,
-                ty: u32,
+                ty: DataType,
             }
+
 
             impl Header {
                 const SIZE: usize = 16 + 4 + 4;
@@ -2574,6 +3464,8 @@ mod pipeline {
                     let metadata_size = take_u32(&bytes[..packet_len]);
                     let ty = take_u32(&bytes[..packet_len - 4]);
 
+                    let ty = DataType::try_from(ty).unwrap();
+
                     Ok(Self {
                         metadata_size,
                         ty,
@@ -2596,6 +3488,7 @@ mod pipeline {
             Some(ReadRaw {
                 metadata,
                 buffer: bytes,
+                ty: header.ty,
             })
         }
     }
@@ -2771,6 +3664,7 @@ mod pipeline {
     }
 
     impl NotAny for ImuData {}
+    impl NotMessageGroup for ImuData {}
 
     impl MetadataOnly for ImuData {}
 
@@ -2837,7 +3731,7 @@ mod pipeline {
         High = 3,
     }
 
-    #[derive(serde::Deserialize, serde::Serialize, Debug, PartialEq)]
+    #[derive(serde::Deserialize, serde::Serialize, Debug, PartialEq, Default)]
     pub struct Timestamp {
         sec: i64,
         nsec: i64,
@@ -3001,6 +3895,25 @@ mod pipeline {
         }
     }
 
+    impl core::fmt::Debug for EncodedFrame {
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            f.debug_struct("EncodedFrame")
+                .field("metadata", &self.metadata)
+                .field("frame_bytes_len", &self.bytes.len())
+                .finish()
+        }
+    }
+
+    impl core::fmt::Debug for PointcloudFrame {
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            f.debug_struct("EncodedFrame")
+                .field("metadata", &self.metadata)
+                .field("point_data_len", &self.points.len())
+                .finish()
+        }
+    }
+
+
     impl <D: Deserializer> IoDeserializeable<D> for CameraFrame {
         type Metadata = Self;
         type Output = Frame;
@@ -3068,6 +3981,7 @@ mod pipeline {
     }
 
     impl NotAny for CameraInputControl {}
+    impl NotMessageGroup for CameraInputControl {}
 
     #[derive(serde_repr::Serialize_repr, serde_repr::Deserialize_repr, Debug, Default, PartialEq)]
     #[repr(u8)]
@@ -3237,6 +4151,7 @@ mod pipeline {
     }
 
     impl NotAny for CameraFrame {}
+    impl NotMessageGroup for CameraFrame {}
 
     #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
     pub struct ImageTransformation {
@@ -3357,7 +4272,7 @@ mod pipeline {
         pub(crate) isp_output: bool,
     }
 
-    #[derive(serde_repr::Serialize_repr, serde_repr::Deserialize_repr, Debug, PartialEq)]
+    #[derive(serde_repr::Serialize_repr, serde_repr::Deserialize_repr, Debug, PartialEq, Default)]
     #[repr(u8)]
     pub enum FrameType {
         Yuv422i = 0,
@@ -3393,6 +4308,7 @@ mod pipeline {
         Gray8 = 30,
         GrayF16 = 31,
         Raw32 = 32,
+        #[default]
         None = 33,
     }
 
@@ -3449,21 +4365,112 @@ mod pipeline {
     #[derive(Debug)]
     pub struct Pipeline<'a> {
         current_node_id: u32,
-        connections: HashSet<NodeConnection<'a>>,
-        nodes: HashMap<u32, InternalNodeInfo<'a>>,
+        pub(crate) connections: HashSet<NodeConnection<'a>>,
+        pub(crate) nodes: HashMap<u32, InternalNodeInfo<'a>>,
         current_io_id: u32,
         current_xlink_out_id: u32,
-        properties: crate::rpc::GlobalProperties,
+        pub properties: crate::rpc::GlobalProperties,
     }
 
     #[derive(PartialEq, Eq, Hash, Debug)]
-    struct NodeConnection<'a> {
+    pub(crate) struct NodeConnection<'a> {
         input_id: u32,
         input_name: &'a str,
         input_group: Option<&'a str>,
         output_id: u32,
         output_name: &'a str,
         output_group: Option<&'a str>,
+    }
+
+    trait NodeRegister {
+        fn register<'a>(&'a self, map: &mut HashMap<u32, InternalNodeInfo<'a>>, io_idx: &mut u32);
+    }
+
+    trait LinkRegister<'a> {
+        fn register(self, map: &mut HashSet<NodeConnection<'a>>);
+    }
+
+    struct LinkRef<'a, T: IoDesc> {
+        id: u32,
+        link: &'a T::InfoStorage,
+    }
+
+    impl <'a, T: IoDesc> Clone for LinkRef<'a, T> {
+        fn clone(&self) -> Self {
+            Self {
+                id: self.id,
+                link: self.link,
+            }
+        }
+    }
+
+    impl <'a, T1: IoDesc, T2: IoDesc> LinkRegister<'a> for (LinkRef<'a, T1>, LinkRef<'a, T2>) {
+        fn register(self, map: &mut HashSet<NodeConnection<'a>>) {
+            let (input, output) = self;
+            let connection = NodeConnection {
+                input_id: input.id,
+                input_name: T1::name(&input.link),
+                input_group: T1::GROUP,
+                output_id: output.id,
+                output_name: T2::name(&output.link),
+                output_group: T2::GROUP,
+            };
+            map.insert(connection);
+        }
+    }
+
+    /*
+    impl <'a, T1: IoDesc, T2: IoDesc, L> LinkRegister<'a> for ((LinkRef<'a, T1>, L), LinkRef<'a, T2>) where (L, LinkRef<'a, T2>): LinkRegister<'a> {
+        fn register(self, map: &mut HashSet<NodeConnection<'a>>) {
+            let ((input, rest), output) = self;
+            (input, output.clone()).register(map);
+            (rest, output).register(map);
+        }
+    }
+    */
+
+    impl <N: Node> NodeRegister for NodeT<N> {
+        fn register<'a>(&'a self, map: &mut HashMap<u32, InternalNodeInfo<'a>>, io_idx: &mut u32) {
+            register_node(self, map, io_idx)
+        }
+    }
+
+    impl <'b, N: Node, T: IoDesc + IoDeserializeable<D>, D: Deserializer> NodeRegister for Grouped<'_, OutputRef<'b, N, T, D>> {
+        fn register<'a>(&'a self, map: &mut HashMap<u32, InternalNodeInfo<'a>>, io_idx: &mut u32) {
+            let n = self.inner.node;
+
+            let mut w = vec![];
+
+            n.properties.serialize(&mut w).unwrap();
+
+            let mut io_info = IoInfo::new(io_idx);
+
+            n.input.register(&mut io_info);
+
+            n.output.register(&mut io_info);
+
+            let info = InternalNodeInfo {
+                name: N::NAME,
+                alias: N::ALIAS,
+                properties: w,
+                log_level: n.log_level,
+                io_info: io_info.inner,
+            };
+
+            map.insert(n.id, info);
+
+
+
+            //self.inner.node.register(map, io_idx)
+        }
+    }
+
+    impl <G1: NodeRegister, G2: NodeRegister> NodeRegister for (G1, G2) {
+        fn register<'a>(&'a self, map: &mut HashMap<u32, InternalNodeInfo<'a>>, io_idx: &mut u32) {
+            println!("call?");
+            self.0.register(map, io_idx);
+            self.1.register(map, io_idx);
+        }
     }
 
     impl <'a> Pipeline<'a> {
@@ -3478,11 +4485,11 @@ mod pipeline {
             }
         }
 
-        pub fn create_node<T: Node>(&mut self) -> NodeT<T> {
+        pub fn create_node<T: Node>(&mut self) -> NodeT<T> where <T as Node>::Input: Default {
             self.create_node_with_properties(Default::default())
         }
 
-        pub fn create_node_with_properties<T: Node>(&mut self, properties: T::Properties) -> NodeT<T> {
+        pub fn create_node_with_properties<T: Node>(&mut self, properties: T::Properties) -> NodeT<T> where <T as Node>::Input: Default {
             let id = self.current_node_id;
             self.current_node_id += 1;
             NodeT {
@@ -3496,23 +4503,39 @@ mod pipeline {
             }
         }
 
-        pub fn link<I: IoSerializeable<S> + IoDesc, S: Serializer, O: IoDeserializeable<D> + IoDesc, D: Deserializer, N1: Node, N2: Node>(&mut self, output: OutputRef<'a, N1, O, D>, input: InputRef<'a, N2, I, S>) where (I::Metadata, O::Metadata): CompatibleLink, (S, D): CompatibleSerialization {
-            let connection = NodeConnection {
-                input_id: input.node.id,
-                input_name: input.input.name(),
-                input_group: input.input.group(),
-                output_id: output.node.id,
-                output_name: output.output.name(),
-                output_group: output.output.group(),
-            };
+        pub fn create_sync_node<T:IoRegister>(&mut self, msg_group: MsgGroup<T>) -> NodeT<Sync<T>> {
+            self.create_sync_node_with_properties(msg_group, Default::default())
+        }
 
-            self.connections.insert(connection);
+        pub fn create_sync_node_with_properties<T:IoRegister>(&mut self, msg_group: MsgGroup<T>, properties: SyncProperties) -> NodeT<Sync<T>> {
+            let id = self.current_node_id;
+            self.current_node_id += 1;
+
+            NodeT {
+                log_level: LogLevel::Off,
+                //parent_id: 1,
+                properties,
+                _m: core::marker::PhantomData,
+                input: msg_group,
+                output: Default::default(),
+                id,
+            }
+        }
+
+        pub fn link_sync_node<T: IoRegister + NodeRegister>(&mut self, sync: &'a NodeT<Sync<T>>) {
+            NodeRegister::register(&sync.input.group, &mut self.nodes, &mut self.current_io_id);
+        }
+
+        pub fn link<I: IoSerializeable<S> + IoDesc, S: Serializer, O: IoDeserializeable<D> + IoDesc, D: Deserializer, N1: Node, N2: Node>(&mut self, output: OutputRef<'a, N1, O, D>, input: InputRef<'a, N2, I, S>) where (I::Metadata, O::Metadata): CompatibleLink, (S, D): CompatibleSerialization {
+            (input.link_ref(), output.link_ref()).register(&mut self.connections);
             self.insert_node(&input.node);
             self.insert_node(&output.node);
         }
 
         fn insert_node<N: Node>(&mut self, node: &'a NodeT<N>) {
-            register_node(node, &mut self.nodes, &mut self.current_io_id)
+            if !self.nodes.contains_key(&node.id) {
+                node.register(&mut self.nodes, &mut self.current_io_id);
+            }
         }
 
         pub fn create_output_queue<O: IoDeserializeable<D> + IoDesc, D: Deserializer, N1: Node>(&mut self, output: OutputRef<'a, N1, O, D>, xlink: &'a mut NodeT<XLinkOut>)  -> OutputQueue<O::Metadata, D, queue_state::Pending> where ((), O::Metadata): CompatibleLink, (AnySerializer, D): CompatibleSerialization 
@@ -3711,6 +4734,7 @@ mod pipeline {
     }
 
     impl NotAny for SystemInfo {}
+    impl NotMessageGroup for SystemInfo {}
 
     impl MetadataOnly for SystemInfo {}
 
@@ -4099,6 +5123,7 @@ mod pipeline {
     }
 
     impl NotAny for StereoDepthConfig {}
+    impl NotMessageGroup for StereoDepthConfig {}
 
     impl core::default::Default for StereoDepthConfig {
         fn default() -> Self {
@@ -4550,6 +5575,1039 @@ mod pipeline {
         }
     }
 
+    pub struct ImageAlign;
+
+    impl Node for ImageAlign {
+        type Input = ImageAlignInputs;
+        type Output = ImageAlignOutputs;
+        type Properties = ImageAlignProperties;
+        const NAME: &str = "ImageAlign";
+    }
+
+    #[derive(serde::Deserialize, serde::Serialize, Debug, PartialEq, Default)]
+    pub struct ImageAlignConfig {
+        pub static_depth_plane: u16,
+    }
+
+    impl StaticIoDesc for ImageAlignConfig {
+        const NAME: &str = "inputConfig";
+        const NODE_TYPE: NodeType = NodeType::SReceiver;
+    }
+
+    impl MetadataOnly for ImageAlignConfig {}
+
+    impl NotAny for ImageAlignConfig {}
+    impl NotMessageGroup for ImageAlignConfig {}
+
+    #[derive(Default)]
+    pub struct ImageAlignInputs {
+        config: Input<ImageAlignConfig, RnopSerializer>,
+        input: Input<Numbered<CameraFrame, 15>, RnopSerializer>,
+        align_to: Input<Numbered<CameraFrame, 16>, RnopSerializer>,
+    }
+
+    pub struct ImageAlignInputRef<'a, P: Node> {
+        pub config: InputRef<'a, P, ImageAlignConfig, RnopSerializer>,
+        pub input: InputRef<'a, P, Numbered<CameraFrame, 15>, RnopSerializer>,
+        pub align_to: InputRef<'a, P, Numbered<CameraFrame, 16>, RnopSerializer>,
+    }
+
+    impl Inputs for ImageAlignInputs {
+        type Inputs<'a, N> = ImageAlignInputRef<'a, N> where Self: 'a, N: Node + 'a;
+        fn inputs<'a, T: Node>(&'a self, node: &'a NodeT<T>) -> Self::Inputs<'a, T> {
+            let Self {
+                config,
+                input,
+                align_to,
+            } = self;
+
+            ImageAlignInputRef {
+                config: config.inputs(node),
+                input: input.inputs(node),
+                align_to: align_to.inputs(node),
+            }
+        }
+    }
+    
+    impl IoRegister for ImageAlignInputs {
+        fn register<'a, 'b>(&'a self, info: &mut IoInfo<'a, 'b>) {
+            let Self {
+                config,
+                input,
+                align_to,
+            } = self;
+            config.register(info);
+            input.register(info);
+            align_to.register(info);
+        }
+    }
+
+    // TODO: have a generic input wrapper that just uses this like NormalInput<T>
+    // since theres like 5 nodes with the same name & node type for input
+    impl StaticIoDesc for Numbered<CameraFrame, 15> {
+        const NAME: &str = "input";
+        const NODE_TYPE: NodeType = NodeType::SReceiver;
+    }
+
+    impl StaticIoDesc for Numbered<CameraFrame, 16> {
+        const NAME: &str = "inputAlignTo";
+        const NODE_TYPE: NodeType = NodeType::SReceiver;
+    }
+
+    #[derive(Default)]
+    pub struct ImageAlignOutputs {
+        aligned: Output<Numbered<CameraFrame, 17>, RnopDeserializer>,
+        passthrough: Output<Numbered<CameraFrame, 18>, RnopDeserializer>,
+    }
+
+    pub struct ImageAlignOutputRef<'a, P: Node> {
+        pub aligned: OutputRef<'a, P, Numbered<CameraFrame, 17>, RnopDeserializer>,
+        pub passthrough: OutputRef<'a, P, Numbered<CameraFrame, 18>, RnopDeserializer>,
+    }
+
+    impl Outputs for ImageAlignOutputs {
+        type Outputs<'a, N> = ImageAlignOutputRef<'a, N> where Self: 'a, N: Node + 'a;
+        fn outputs<'a, T: Node>(&'a self, node: &'a NodeT<T>) -> Self::Outputs<'a, T> {
+            let Self {
+                aligned,
+                passthrough,
+            } = self;
+
+            ImageAlignOutputRef {
+                aligned: aligned.outputs(node),
+                passthrough: passthrough.outputs(node),
+            }
+        }
+    }
+
+    impl IoRegister for ImageAlignOutputs {
+        fn register<'a, 'b>(&'a self, info: &mut IoInfo<'a, 'b>) {
+            let Self {
+                aligned,
+                passthrough,
+            } = self;
+            aligned.register(info);
+            passthrough.register(info);
+        }
+    }
+
+    impl StaticIoDesc for Numbered<CameraFrame, 17> {
+        const NAME: &str = "outputAligned";
+        const NODE_TYPE: NodeType = NodeType::MSender;
+    }
+
+    impl StaticIoDesc for Numbered<CameraFrame, 18> {
+        const NAME: &str = "passthroughInput";
+        const NODE_TYPE: NodeType = NodeType::MSender;
+    }
+
+    #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
+    pub struct ImageAlignProperties {
+        pub initial_config: ImageAlignConfig,
+        pub num_frames_pool: i32,
+        pub align_width: i32,
+        pub align_height: i32,
+        #[serde(with = "serde_bytes")]
+        pub warp_hw_ids: Vec<u8>,
+        pub interpolation: Interpolation,
+        pub keep_input_aspect_ratio: bool,
+        pub num_shaves: i32,
+    }
+
+    impl core::default::Default for ImageAlignProperties {
+        fn default() -> Self {
+            Self {
+                initial_config: Default::default(),
+                num_frames_pool: 4,
+                align_width: 0,
+                align_height: 0,
+                warp_hw_ids: vec![],
+                interpolation: Interpolation::Auto,
+                keep_input_aspect_ratio: true,
+                num_shaves: 2,
+            }
+        }
+    }
+
+    #[derive(serde_repr::Deserialize_repr, serde_repr::Serialize_repr, Debug, Hash, PartialEq, Eq, Default)]
+    #[repr(i32)]
+    pub enum Interpolation {
+        Auto = -1,
+        Bilinear = 0,
+        #[default]
+        Bicubic = 1,
+        NearestNeighbor = 2
+    }
+
+    pub struct VideoEncoder;
+
+    impl Node for VideoEncoder {
+        type Input = Input<Numbered<CameraFrame, 20>, RnopSerializer>;
+        type Output = VideoEncoderOutputs;
+        type Properties = VideoEncoderProperties;
+        const NAME: &str = "VideoEncoder";
+    }
+
+    impl StaticIoDesc for Numbered<CameraFrame, 20> {
+        const NAME: &str = "in";
+        const NODE_TYPE: NodeType = NodeType::SReceiver;
+    }
+
+    #[derive(Debug, serde::Serialize, serde::Deserialize)]
+    pub struct VideoEncoderProperties {
+        pub bitrate: i32,
+        pub keyframe_frequency: i32,
+        pub max_bitrate: i32,
+        pub num_b_frames: i32,
+        pub num_frames_pool: u32,
+        pub output_frame_size: i32,
+        pub profile: EncoderProfile,
+        pub quality: i32,
+        pub lossless: bool,
+        pub rate_ctrl_mode: RateControlMode,
+        pub framerate: f32,
+    }
+
+    #[derive(serde_repr::Deserialize_repr, serde_repr::Serialize_repr, Debug, PartialEq, Eq, Default)]
+    #[repr(i32)]
+    pub enum EncoderProfile {
+        #[default]
+        H264Baseline = 0,
+        H264High = 1,
+        H264Main = 2,
+        H265Main = 3,
+        Mjpeg = 4,
+    }
+
+    #[derive(serde_repr::Deserialize_repr, serde_repr::Serialize_repr, Debug, PartialEq, Eq)]
+    #[repr(i32)]
+    pub enum RateControlMode {
+        // const bitrate
+        Cbr = 0,
+        // variable bitrate
+        Vbr = 1,
+    }
+
+    impl core::default::Default for VideoEncoderProperties {
+        fn default() -> Self {
+            Self {
+                bitrate: 0,
+                keyframe_frequency: 30,
+                max_bitrate: 0,
+                num_b_frames: 0,
+                num_frames_pool: 0,
+                output_frame_size: 0,
+                profile: EncoderProfile::default(),
+                quality: 80,
+                lossless: false,
+                rate_ctrl_mode: RateControlMode::Cbr,
+                framerate: 30.,
+            }
+        }
+    }
+
+    #[derive(Debug, serde::Serialize, serde::Deserialize)]
+    pub struct EncodedCameraFrame {
+        cam: CameraSettings,
+        instance_num: u32,
+        width: u32,
+        height: u32,
+        quality: u32,
+        bitrate: u32,
+        profile: FrameProfile,
+        lossless: bool,
+        ty: FrameKind,
+        frame_offset: u32,
+        frame_size: u32,
+        transformation: ImageTransformation,
+        sequence_num: i32,
+        timestamp: Timestamp,
+        device_timestamp: Timestamp,
+    }
+
+    impl NotAny for EncodedCameraFrame {}
+    impl NotMessageGroup for EncodedCameraFrame {}
+
+    #[derive(serde_repr::Deserialize_repr, serde_repr::Serialize_repr, Debug, Hash, PartialEq, Eq)]
+    #[repr(u8)]
+    enum FrameProfile {
+        Mjpeg = 0,
+        H264 = 1,
+        H265 = 2,
+    }
+
+    #[derive(serde_repr::Deserialize_repr, serde_repr::Serialize_repr, Debug, Hash, PartialEq, Eq)]
+    #[repr(u8)]
+    enum FrameKind {
+        I = 0,
+        P = 1,
+        B = 2,
+        Unknown = 3,
+    }
+
+    pub struct EncodedFrame {
+        metadata: EncodedCameraFrame,
+        bytes: Vec<u8>,
+    }
+
+    impl <D: Deserializer> IoDeserializeable<D> for EncodedCameraFrame {
+        type Metadata = Self;
+        type Output = EncodedFrame;
+    }
+
+    impl StaticIoDesc for EncodedCameraFrame {
+        const NAME: &str = "out";
+        const NODE_TYPE: NodeType = NodeType::MSender;
+    }
+
+    impl StaticIoDesc for Numbered<CameraFrame, 19> {
+        const NAME: &str = "bistream";
+        const NODE_TYPE: NodeType = NodeType::MSender;
+    }
+
+    #[derive(Default)]
+    pub struct VideoEncoderOutputs {
+        bitstream: Output<Numbered<CameraFrame, 19>, RnopDeserializer>,
+        out: Output<EncodedCameraFrame, RnopDeserializer>,
+    }
+
+    pub struct VideoEncoderOutputRef<'a, N: Node> {
+        pub bitstream: OutputRef<'a, N, Numbered<CameraFrame, 19>, RnopDeserializer>,
+        pub out: OutputRef<'a, N, EncodedCameraFrame, RnopDeserializer>,
+    }
+    impl Outputs for VideoEncoderOutputs {
+        type Outputs<'a, N> = VideoEncoderOutputRef<'a, N> where Self: 'a, N: Node + 'a;
+        fn outputs<'a, T: Node>(&'a self, node: &'a NodeT<T>) -> Self::Outputs<'a, T> {
+            let Self {
+                bitstream,
+                out,
+            } = self;
+
+            VideoEncoderOutputRef {
+                bitstream: bitstream.outputs(node),
+                out: out.outputs(node),
+            }
+        }
+    }
+
+    impl IoRegister for VideoEncoderOutputs {
+        fn register<'a, 'b>(&'a self, info: &mut IoInfo<'a, 'b>) {
+            self.bitstream.register(info);
+            self.out.register(info);
+        }
+    }
+
+    pub struct Pointcloud;
+
+    impl Node for Pointcloud {
+        type Input = (Input<PointcloudConfig, RnopSerializer>, Input<Numbered<CameraFrame, 21>, RnopSerializer>);
+        type Output = (Output<PointcloudData, RnopDeserializer>, Output<Numbered<CameraFrame, 22>, RnopDeserializer>);
+        type Properties = PointcloudProperties;
+        const NAME: &str = "PointCloud";
+    }
+
+    impl StaticIoDesc for PointcloudConfig {
+        const NAME: &str = "inputConfig";
+        const NODE_TYPE: NodeType = NodeType::SReceiver;
+    }
+
+    impl StaticIoDesc for Numbered<CameraFrame, 21> {
+        const NAME: &str = "inputDepth";
+        const NODE_TYPE: NodeType = NodeType::SReceiver;
+    }
+    
+    impl StaticIoDesc for Numbered<CameraFrame, 22> {
+        const NAME: &str = "passthroughDepth";
+        const NODE_TYPE: NodeType = NodeType::MSender;
+    }
+    
+    impl StaticIoDesc for PointcloudData {
+        const NAME: &str = "outputPointCloud";
+        const NODE_TYPE: NodeType = NodeType::MSender;
+    }
+
+    #[derive(serde::Serialize, serde::Deserialize, Debug)]
+    pub struct PointcloudProperties {
+        pub initial_config: PointcloudConfig,
+        pub num_frames_pool: i32,
+    }
+
+    impl core::default::Default for PointcloudProperties {
+        fn default() -> Self {
+            Self {
+                initial_config: Default::default(),
+                num_frames_pool: 4,
+            }
+        }
+    }
+
+    #[derive(serde::Serialize, serde::Deserialize, Debug)]
+    pub struct PointcloudConfig {
+        sequence: i32,
+        timestamp: Timestamp,
+        device_timestamp: Timestamp,
+        pub sparse: bool,
+        pub transformation_matrix: [[f32; 4]; 4],
+    }
+
+    impl MetadataOnly for PointcloudConfig {}
+    impl NotAny for PointcloudConfig {}
+    impl NotMessageGroup for PointcloudConfig {}
+
+    impl <D: Deserializer> IoDeserializeable<D> for PointcloudData {
+        type Metadata = Self;
+        type Output = PointcloudFrame;
+    }
+
+    impl core::default::Default for PointcloudConfig {
+        fn default() -> Self {
+            Self {
+                sequence: 0,
+                timestamp: Default::default(),
+                device_timestamp: Default::default(),
+                sparse: false,
+                transformation_matrix: [[1., 0., 0., 0.,], 
+                                        [0., 1., 0., 0.,],
+                                        [0., 0., 1., 0.,],
+                                        [0., 0., 0., 1.,]],
+            }
+        }
+    }
+
+    #[derive(serde::Deserialize, serde::Serialize, Debug)]
+    pub struct PointcloudData {
+        pub width: u32,
+        pub height: u32,
+        pub minx: f32,
+        pub miny: f32,
+        pub minz: f32,
+        pub maxx: f32,
+        pub maxy: f32,
+        pub maxz: f32,
+        pub sparse: bool,
+        pub instance: u32,
+        pub timestamp: Timestamp,
+        pub device_timestamp: Timestamp,
+        sequence: i32,
+    }
+    impl NotAny for PointcloudData {}
+    impl NotMessageGroup for PointcloudData {}
+
+    pub struct PointcloudFrame {
+        metadata: PointcloudData,
+        points: Vec<u8>,
+    }
+
+    pub struct ImageManip;
+
+    impl Node for ImageManip {
+        type Input = (Input<ImageManipConfig, RnopSerializer>, Input<Numbered<CameraFrame, 23>, RnopSerializer>);
+        type Output = Output<Numbered<CameraFrame, 24>, RnopDeserializer>;
+        type Properties = ImageManipProperties;
+        const NAME: &str = "ImageManip";
+    }
+
+    #[derive(serde_repr::Deserialize_repr, serde_repr::Serialize_repr, Debug, Hash, PartialEq, Eq)]
+    #[repr(u8)]
+    pub enum ImageManipBackend {
+        Cpu,
+        Hw,
+    }
+
+    #[derive(serde_repr::Deserialize_repr, serde_repr::Serialize_repr, Debug, Hash, PartialEq, Eq)]
+    #[repr(u8)]
+    pub enum PerformanceMode {
+        Performance = 0,
+        Balanced = 1,
+        LowPower = 2,
+    }
+
+    #[derive(serde::Serialize, serde::Deserialize, Debug)]
+    pub struct ImageManipProperties {
+        pub initial_config: ImageManipConfig,
+        pub output_frame_size: i32,
+        pub num_frames_pool: i32,
+        pub backend: ImageManipBackend,
+        pub performance_mode: PerformanceMode,
+    }
+
+    impl core::default::Default for ImageManipProperties {
+        fn default() -> Self {
+            Self {
+                initial_config: Default::default(),
+                output_frame_size: 1 * 1024 * 1024,
+                num_frames_pool: 4,
+                backend: ImageManipBackend::Cpu,
+                performance_mode: PerformanceMode::Performance,
+            }
+        }
+    }
+
+    #[derive(serde::Serialize, serde::Deserialize, Debug)]
+    pub struct ImageManipOpsBase<T> {
+        pub operations: T,
+        pub output_width: u32,
+        pub output_height: u32,
+        pub center: bool,
+        pub resize_mode: ResizeMode,
+        pub background: Background,
+        pub background_r: u32,
+        pub background_g: u32,
+        pub background_b: u32,
+        pub colormap: ColorMap,
+        pub undistort: bool,
+    }
+
+    impl <T: core::default::Default> core::default::Default for ImageManipOpsBase<T> {
+        fn default() -> Self {
+            Self {
+                operations: Default::default(),
+                output_width: 0,
+                output_height: 0,
+                center: true,
+                resize_mode: Default::default(),
+                background: Default::default(),
+                background_r: 0,
+                background_g: 0,
+                background_b: 0,
+                colormap: Default::default(),
+                undistort: false,
+            }
+        }
+    }
+
+    #[derive(serde_repr::Deserialize_repr, serde_repr::Serialize_repr, Debug, Hash, PartialEq, Eq, Default)]
+    #[repr(i32)]
+    pub enum ColorMap {
+        #[default]
+        None = 0,
+        Turbo = 1,
+        Jet = 2,
+        StereoTurbo = 3,
+        StereoJet = 4,
+    }
+
+    #[derive(serde_repr::Deserialize_repr, serde_repr::Serialize_repr, Debug, Hash, PartialEq, Eq, Default)]
+    #[repr(u8)]
+    pub enum ResizeMode {
+        #[default]
+        None = 0,
+        Stretch = 1,
+        Letterbox = 2,
+        CenterCrop = 3,
+    }
+
+    #[derive(serde_repr::Deserialize_repr, serde_repr::Serialize_repr, Debug, Hash, PartialEq, Eq, Default)]
+    #[repr(u8)]
+    pub enum Background {
+        #[default]
+        Color = 0,
+    }
+
+    #[derive(serde::Serialize, serde::Deserialize, Debug, Default)]
+    pub struct ImageManipConfig {
+        pub base: ImageManipOpsBase<Vec<ManipOp>>,
+        pub output_frame_ty: FrameType,
+        pub reuse_previous_image: bool,
+        pub skip_current_image: bool,
+    }
+
+    #[derive(serde::Deserialize, serde::Serialize, Debug)]
+    pub struct ManipOp {
+        pub op: ManipOpTy,
+    }
+
+    #[derive(serde::Deserialize, serde::Serialize, Debug)]
+    pub enum ManipOpTy {
+        Translate(Translate),
+        Rotate(Rotate),
+        Resize(Resize),
+        Flip(Flip),
+        Affine(Affine),
+        Perspective(Perspective),
+        FourPoints(FourPoints),
+        Crop(Crop),
+    }
+
+    #[derive(serde::Deserialize, serde::Serialize, Debug)]
+    pub struct Translate {
+        pub offset_x: f32,
+        pub offset_y: f32,
+        pub normalized: bool,
+    }
+    
+    #[derive(serde::Deserialize, serde::Serialize, Debug)]
+    pub struct Rotate {
+        pub angle: f32,
+        pub center: bool,
+        pub offset_x: f32,
+        pub offset_y: f32,
+        pub normalized: bool,
+    }
+
+    #[derive(serde_repr::Deserialize_repr, serde_repr::Serialize_repr, Debug, Hash, PartialEq, Eq)]
+    #[repr(u8)]
+    pub enum ResizeOpMode {
+        Value = 0,
+        Fit = 1,
+        Fill = 2,
+    }
+
+    #[derive(serde::Deserialize, serde::Serialize, Debug)]
+    pub struct Resize {
+        pub width: f32,
+        pub height: f32,
+        pub normalized: bool,
+        pub mode: ResizeOpMode,
+    }
+
+    #[derive(serde_repr::Deserialize_repr, serde_repr::Serialize_repr, Debug, Hash, PartialEq, Eq)]
+    #[repr(u8)]
+    pub enum FlipDirection {
+        Horizontal,
+        Vertical,
+    }
+
+    #[derive(serde::Deserialize, serde::Serialize, Debug)]
+    pub struct Flip {
+        pub direction: FlipDirection,
+        pub center: bool,
+    }
+
+    #[derive(serde::Deserialize, serde::Serialize, Debug)]
+    pub struct Affine {
+        /// flattened 2x2
+        pub matrix: [f32; 4],
+    }
+
+    #[derive(serde::Deserialize, serde::Serialize, Debug)]
+    pub struct Perspective {
+        /// flattened 3x3
+        pub matrix: [f32; 9],
+    }
+
+    #[derive(serde::Deserialize, serde::Serialize, Debug)]
+    pub struct Point2f {
+        pub x: f32,
+        pub y: f32,
+        pub normalized: bool,
+        pub has_normalized: bool,
+    }
+
+    #[derive(serde::Deserialize, serde::Serialize, Debug)]
+    pub struct FourPoints {
+        pub src: [Point2f; 4],
+        pub dst: [Point2f; 4],
+        pub normalized: bool,
+    }
+
+    #[derive(serde::Deserialize, serde::Serialize, Debug)]
+    pub struct Crop {
+        pub width: f32,
+        pub height: f32,
+        pub normalized: bool,
+        pub center: bool,
+    }
+
+    impl NotAny for ImageManipConfig {}
+    impl MetadataOnly for ImageManipConfig {}
+    impl NotMessageGroup for ImageManipConfig {}
+
+    impl StaticIoDesc for ImageManipConfig {
+        const NAME: &str = "inputConfig";
+        const NODE_TYPE: NodeType = NodeType::SReceiver;
+    }
+
+    impl StaticIoDesc for Numbered<CameraFrame, 23> {
+        const NAME: &str = "inputImage";
+        const NODE_TYPE: NodeType = NodeType::SReceiver;
+    }
+
+    impl StaticIoDesc for Numbered<CameraFrame, 24> {
+        const NAME: &str = "out";
+        const NODE_TYPE: NodeType = NodeType::MSender;
+    }
+
+    // this has dynamic inputs
+    pub struct Sync<T>(core::marker::PhantomData<T>);
+
+    impl <T: IoRegister> Node for Sync<T> {
+        type Input = MsgGroup<T>;
+        type Output = Output<MessageGroup, RnopDeserializer>;
+        type Properties = SyncProperties;
+        const NAME: &str = "Sync";
+    }
+
+    impl <G> Inputs for MsgGroup<G> {
+        type Inputs<'a, N> = () where Self: 'a, N: Node + 'a;
+        fn inputs<'a, T: Node>(&'a self, node: &'a NodeT<T>) -> Self::Inputs<'a, T> {
+        }
+    }
+
+    impl <G: IoRegister> IoRegister for MsgGroup<G> {
+        fn register<'a, 'b>(&'a self, info: &mut IoInfo<'a, 'b>) {
+            self.group.register(info)
+        }
+    }
+
+    impl <T: IoRegister + Clone + NodeRegister + SyncIoRegister> NodeT<Sync<T>> {
+        pub fn register<'a>(&'a self, pipe: &mut Pipeline<'a>) where (u32, T): LinkRegister<'a> {
+            let map = &mut pipe.connections;
+
+            let id = self.id;
+
+            LinkRegister::register((self.id, self.input.group.clone()), map);
+            NodeRegister::register(&self.input.group, &mut pipe.nodes, &mut pipe.current_io_id);
+
+            // need to iterate over all of these to be able to get "inputs", "input name"
+
+            {
+                let mut w = vec![];
+
+                <SyncProperties as Serialize<RnopSerializer>>::serialize(&self.properties, &mut w).unwrap();
+
+                let mut io_info = IoInfo::new(&mut pipe.current_io_id);
+
+                SyncIoRegister::register(&self.input.group, &mut io_info);
+                self.output.register(&mut io_info);
+
+                let info = InternalNodeInfo {
+                    name: Sync::<T>::NAME,
+                    alias: Sync::<T>::ALIAS,
+                    properties: w,
+                    log_level: self.log_level,
+                    io_info: io_info.inner,
+                };
+
+                pipe.nodes.insert(self.id, info);
+            }
+        }
+    }
+
+    impl <'a, P: Node, T: IoDesc + IoDeserializeable<D>, D: Deserializer> LinkRegister<'a> for (u32, Grouped<'a, OutputRef<'a, P, T, D>>) {
+        fn register(self, map: &mut HashSet<NodeConnection<'a>>) {
+            let (input, out) = self;
+            let name = out.inner.output.name();
+
+            let connection = NodeConnection {
+                input_name: out.name,
+                input_group: Grouped::<OutputRef<'a, P, T, D>>::GROUP,
+                input_id: input,
+
+                output_id: out.inner.node.id,
+                output_name: name,
+                output_group: T::GROUP,
+                /*
+                output_id: input,
+                output_name: out.name,
+                output_group: Grouped::<OutputRef<'a, P, T, D>>::GROUP,
+
+                input_id: out.inner.node.id,
+                input_name: name,
+                input_group: T::GROUP,
+                */
+            };
+            map.insert(connection);
+        }
+    }
+
+    impl <'a, P: Node, T: IoDesc + IoDeserializeable<D>, D: Deserializer, L> LinkRegister<'a> for (u32, (L, Grouped<'a, OutputRef<'a, P, T, D>>)) where (u32, L): LinkRegister<'a> {
+        fn register(self, map: &mut HashSet<NodeConnection<'a>>) {
+            let (input, (rest, output)) = self;
+            LinkRegister::register((input, output), map);
+            LinkRegister::register((input, rest), map);
+        }
+    }
+
+    impl <'a, P: Node, T: IoDesc + IoDeserializeable<D>, D: Deserializer> Grouped<'_, OutputRef<'a, P, T, D>> {
+        fn link_ref(&self) -> LinkRef<'a, Grouped<'_, OutputRef<'a, P, T, D>>> {
+            LinkRef {
+                id: self.inner.node.id,
+                link: &self.inner.output.output,
+            }
+        }
+    }
+
+    /*
+    impl <'a, T1: IoDesc, T2: IoDesc, L> LinkRegister<'a> for ((LinkRef<'a, T1>, L), LinkRef<'a, T2>) where (L, LinkRef<'a, T2>): LinkRegister<'a> {
+        fn register(self, map: &mut HashSet<NodeConnection<'a>>) {
+            let ((input, rest), output) = self;
+            (input, output.clone()).register(map);
+            (rest, output).register(map);
+        }
+    }
+    */
+
+    /*
+    impl <'a> NodeT<Sync<'a>> {
+        /*
+        fn add_input<'i, P: Node, T: IoDesc + IoSerializeable<S>, S: Serializer>(&self, input: InputRef<'i, P, T, S>) {
+            // this cant be dynamic 
+            // maybe the (T, (..)) thing ? 
+            //  - also needs a wrapper
+
+        }
+        */
+    }
+    */
+
+
+
+    /*
+    trait Linkable<'a, O: IoDesc> {
+        type This;
+        type Output where (Self::This, LinkRef<'a, O>): LinkRegister<'a>;
+        fn output(&self) -> Self::Output;
+    }
+    */
+
+    /*
+    impl <T> IoDesc for MsgGroup<T> {
+        fn name(_: &Self::InfoStorage) -> &str {
+            unreachable!()
+        }
+        fn node_type(_: &Self::InfoStorage) -> NodeType {
+            unreachable!()
+        }
+        type InfoStorage = T;
+    }
+    */
+
+    /*
+    impl <S: Serializer, T> IoRegister for Input<MsgGroup<T>, S> {
+    }
+    */
+    
+
+    /*
+    impl <'a> Node for Sync<'a> {
+        type Input = Vec<Input<&'a Dynamic<SyncAny>, AnySerializer>>;
+        type Output = Output<MessageGroup, RnopDeserializer>;
+        type Properties = SyncProperties;
+        const NAME: &'static str = "";
+    }
+    */
+
+    impl <'a, S: Serializer> IoSerializeable<S> for &'a Dynamic<SyncAny> {
+        type Metadata = ();
+        type Output = ();
+    }
+
+    impl <'i> Inputs for Vec<Input<&'i Dynamic<SyncAny>, AnySerializer>> {
+        type Inputs<'a, N> = () where Self: 'a, N: Node + 'a;
+        fn inputs<'a, T: Node>(&'a self, node: &'a NodeT<T>) -> Self::Inputs<'a, T> {
+            ()
+        }
+    }
+
+    #[derive(serde::Serialize, serde::Deserialize, Debug)]
+    pub struct SyncProperties {
+        pub sync_threshold_ns: i64,
+        pub sync_attempts: i64,
+        pub processor: crate::rpc::ProcessorType,
+    }
+
+    impl core::default::Default for SyncProperties {
+        fn default() -> Self {
+            Self {
+                sync_threshold_ns: 1000000,
+                sync_attempts: -1,
+                processor: crate::rpc::ProcessorType::LeonCss,
+            }
+        }
+    }
+
+    struct SyncAny;
+
+    impl <'a> IoDesc for &'a Dynamic<SyncAny> {
+        fn name(this: &Self::InfoStorage) -> &str {
+            this.name
+        }
+
+        fn node_type(this: &Self::InfoStorage) -> NodeType {
+            NodeType::SReceiver
+        }
+
+        type InfoStorage = DynamicStorage<&'a str>;
+    }
+
+
+    #[derive(Debug, serde::Deserialize)]
+    pub struct MessageGroup {
+        msgs: Vec<(Option<DataType>, String)>,
+        timestamp: Timestamp,
+        device_timestamp: Timestamp,
+        sequence: i32,
+    }
+
+    impl StaticIoDesc for MessageGroup {
+        const NAME: &str = "out";
+        const NODE_TYPE: NodeType = NodeType::MSender;
+    }
+
+
+    impl <D: Deserializer> IoDeserializeable<D> for MessageGroup {
+        type Metadata = MessageGroup;
+        type Output = GroupedMessage;
+    }
+
+    impl NotAny for MessageGroup {}
+
+    #[derive(Debug)]
+    pub enum GroupedMessage {
+        MessageGroup(MessageGroup),
+        Imu(ImuData),
+        Frame(Frame),
+        EncodedFrame(EncodedFrame),
+        Pointcloud(PointcloudFrame),
+    }
+
+    impl GroupedMessage {
+        fn from_raw<D: Deserializer>(raw: ReadRaw) -> Result<Self, D::Error> {
+            Ok(match raw.ty {
+                DataType::MessageGroup => {
+                    let group = <MessageGroup as Deserialize<D>>::deserialize(&raw.metadata)?;
+                    GroupedMessage::MessageGroup(group)
+                }
+                DataType::ImuData => {
+                    GroupedMessage::Imu(try_from_raw::<D, ImuData>(raw)?)
+                }
+                DataType::ImgFrame => {
+                    GroupedMessage::Frame(try_from_raw::<D, CameraFrame>(raw)?)
+                }
+                DataType::EncodedFrame => {
+                    GroupedMessage::EncodedFrame(try_from_raw::<D, EncodedCameraFrame>(raw)?)
+                }
+                DataType::PointcloudData => {
+                    GroupedMessage::Pointcloud(try_from_raw::<D, PointcloudData>(raw)?)
+                }
+                _ => todo!(),
+            })
+        }
+    }
+
+    trait ToOutputs<D> {
+        type Output;
+    }
+
+    impl <S: Serializer, D: Deserializer, T: IoDesc> ToOutputs<D> for Input<T, S> {
+        type Output = Output<T, D>;
+    }
+
+    impl <D1: Deserializer, D2: Deserializer, T1: ToOutputs<D1>, T2: ToOutputs<D2>> ToOutputs<(D1, D2)> for (T1, T2) {
+        type Output = (T1::Output, T2::Output);
+    }
+
+
+    struct MessageGroupInput<T> {
+        _t: T,
+    }
+
+    pub struct MsgGroup<T> {
+        group: T,
+    }
+
+    #[derive(Clone)]
+    pub struct Grouped<'a, T> {
+        inner: T,
+        name: &'a str,
+    }
+
+    impl MsgGroup<()> {
+        pub fn new() -> Self {
+            Self {
+                group: (),
+            }
+        }
+
+        pub fn with_msg<'a, P: Node, T: IoDesc + IoDeserializeable<D>, D: Deserializer>(self, t: OutputRef<'a, P, T, D>, output_name: &'a str) -> MsgGroup<Grouped<'a, OutputRef<'a, P, T, D>>> {
+            MsgGroup {
+                group: Grouped {
+                    inner: t,
+                    name: output_name,
+                }
+            }
+        }
+    }
+
+    impl <G: IoDesc> MsgGroup<G> {
+        pub fn with_msg<'a, P: Node, T: IoDesc + IoDeserializeable<D>, D: Deserializer>(self, t: OutputRef<'a, P, T, D>, output_name: &'a str) -> MsgGroup<(G, Grouped<'a, OutputRef<'a, P, T, D>>)> {
+            let MsgGroup {
+                group
+            } = self;
+
+            MsgGroup {
+                group: (group, Grouped { inner: t, name: output_name}),
+            }
+        }
+    }
+
+    impl <'i, P: Node, T: IoDesc + IoDeserializeable<D>, D: Deserializer> SyncIoRegister for Grouped<'i, OutputRef<'i, P, T, D>> {
+        fn register<'a, 'b>(&'a self, info: &mut IoInfo<'a, 'b>) {
+            info.push(Self::GROUP, self.name, NodeType::SReceiver, &self.inner.output.conf);
+        }
+    }
+
+    impl <S1: SyncIoRegister, S2: SyncIoRegister> SyncIoRegister for (S1, S2) {
+        fn register<'a, 'b>(&'a self, info: &mut IoInfo<'a, 'b>) {
+            self.0.register(info);
+            self.1.register(info);
+        }
+    }
+
+    impl <'a, P: Node, T: IoDesc + IoDeserializeable<D>, D: Deserializer> IoDesc for Grouped<'_, OutputRef<'a, P, T, D>> {
+        fn name(this: &Self::InfoStorage) -> &str {
+            T::name(this)
+        }
+
+        const GROUP: Option<&'static str> = Some("inputs");
+
+        fn node_type(this: &Self::InfoStorage) -> NodeType {
+            T::node_type(this)
+        }
+        type InfoStorage = T::InfoStorage;
+    }
+
+    impl <'i, P: Node, T: IoDesc + IoDeserializeable<D>, D: Deserializer> IoRegister for Grouped<'_, OutputRef<'i, P, T, D>> {
+        fn register<'a, 'b>(&'a self, info: &mut IoInfo<'a, 'b>) {
+            self.inner.output.register(info)
+        }
+    }
+
+    impl <'c, P: Node, T: IoDesc + IoSerializeable<S>, S: Serializer> IoRegister for Grouped<'_, InputRef<'c, P, T, S>> {
+        fn register<'a, 'b>(&'a self, info: &mut IoInfo<'a, 'b>) {
+            // FIXME: duplicate group def here 
+            info.push(Some("inputs"), T::name(&self.inner.input.input), T::node_type(&self.inner.input.input), &self.inner.input.conf);
+        }
+    }
+
+    #[test]
+    fn msg_group() {
+        let mut pipe = Pipeline::new();
+        let logger = pipe.create_node::<SystemLogger>();
+
+        let mut imu = pipe.create_node::<Imu>();
+
+
+        imu.properties_mut().enable_sensor(ImuSensorKind::Accelerometer, 400);
+        imu.properties_mut().enable_sensor(ImuSensorKind::GyroscopeCalibrated, 400);
+
+        let group = MsgGroup::new()
+            .with_msg(logger.output(), "log")
+            .with_msg(imu.output(), "imu");
+
+        let sync = pipe.create_sync_node(group);
+
+        sync.register(&mut pipe);
+
+        let mut out = pipe.create_node::<XLinkOut>();
+        pipe.create_output_queue(sync.output(), &mut out);
+
+        assert_eq!(pipe.nodes.len(), 4);
+        assert_eq!(pipe.connections.len(), 3);
+        panic!("{:?}\n{:?}", pipe.connections, pipe.nodes);
+    }
+
     #[test]
     fn pipeline_link() {
         let mut pipe = Pipeline::new();
@@ -4646,6 +6704,78 @@ mod pipeline {
         let schema = pipe.build("DEVICE");
         //panic!("{schema:?}");
     }
+
+    #[test]
+    fn pipeline_schema_rgbd() {
+        const CAMERA_SIZE: (u32, u32) = (1280, 720);
+
+        let mut pipe = Pipeline::new();
+        let mut camera_left = pipe.create_node::<Camera>();
+        camera_left.properties_mut().board_socket = crate::rpc::CameraBoardSocket::B;
+
+        camera_left.request_output(CameraCapability {
+            size: Capability::new_single(CAMERA_SIZE),
+            fps: Capability::new_none(),
+            ty: None,
+            enable_undistortion: None,
+            isp_output: true,
+            resize_mode: FrameResize::Crop,
+        });
+
+        let cam_left = camera_left.requested_camera_outputs().next().unwrap();
+
+        let mut camera_right = pipe.create_node::<Camera>();
+        camera_right.properties_mut().board_socket = crate::rpc::CameraBoardSocket::C;
+
+        camera_right.request_output(CameraCapability {
+            size: Capability::new_single(CAMERA_SIZE),
+            fps: Capability::new_none(),
+            ty: None,
+            enable_undistortion: None,
+            isp_output: true,
+            resize_mode: FrameResize::Crop,
+        });
+
+        let cam_right = camera_right.requested_camera_outputs().next().unwrap();
+
+        let mut stereo = pipe.create_node::<StereoDepth>();
+
+
+        pipe.link(cam_left, stereo.input().left);
+        pipe.link(cam_right, stereo.input().right);
+
+        let mut align = pipe.create_node::<ImageAlign>();
+        let mut color_cam = pipe.create_node::<Camera>();
+
+        color_cam.request_output(CameraCapability {
+            size: Capability::new_single(CAMERA_SIZE),
+            fps: Capability::new_none(),
+            ty: None,
+            enable_undistortion: None,
+            isp_output: true,
+            resize_mode: FrameResize::Crop,
+        });
+
+        let color = color_cam.requested_camera_outputs().next().unwrap();
+
+
+        pipe.link(stereo.output().depth, align.input().input);
+        pipe.link(color.clone(), align.input().align_to);
+
+        let mut depth_out = pipe.create_node::<XLinkOut>();
+        let mut color_out = pipe.create_node::<XLinkOut>();
+        let xlink_out_1 = pipe.create_output_queue(align.output().aligned, &mut depth_out);
+        let xlink_out_2 = pipe.create_output_queue(color, &mut color_out);
+
+        println!("{:?}", pipe.connections);
+
+        assert_eq!(pipe.connections.len(), 6);
+        assert_eq!(pipe.nodes.len(), 7);
+        let schema = pipe.build("DEVICE");
+        //panic!("{schema:?}");
+        //panic!()
+    }
+
 
     #[test]
     fn pipeline_queue() {
@@ -4942,6 +7072,27 @@ mod pipeline {
         //panic!("{v:?}");
         //let v = rnop::Value::parse(&data).unwrap();
         //panic!("{v:?}");
+    }
+
+    #[test]
+    fn rgbd() {
+        let align = vec![185,8,185,1,0,4,0,0,188,0,255,1,2];
+        let cam_r = vec![185,22,185,33,0,3,0,136,0,0,0,0,102,111,185,3,0,0,0,185,5,0,0,0,0,0,185,5,0,0,0,0,0,128,129,2,0,0,0,0,0,0,0,185,3,0,48,121,185,3,133,229,100,134,32,59,0,230,129,23,117,0,0,0,72,124,128,218,0,0,0,72,124,0,186,0,2,255,189,0,255,255,255,255,255,136,0,0,128,191,136,0,0,128,191,0,3,134,0,0,160,0,3,134,0,0,160,0,4,4,4,190,190,186,1,185,6,185,1,184,0,186,2,129,128,2,129,144,1,185,1,184,0,136,0,0,200,65,190,0,190,0];
+        let cam_l = vec![185,22,185,33,0,3,0,136,0,0,0,0,0,0,185,3,0,0,0,185,5,0,0,0,0,0,185,5,129,190,91,0,0,0,129,190,91,0,0,0,0,0,0,98,110,50,185,3,0,0,0,185,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,186,0,0,255,189,0,255,255,255,255,255,136,0,0,128,191,136,0,0,128,191,0,3,134,0,0,160,0,3,134,0,0,160,0,4,4,4,190,190,186,1,185,6,185,1,184,0,186,2,129,0,5,129,192,3,185,1,184,0,136,0,0,200,65,22,0,1,0];
+        let cam_c = vec![185,22,185,33,0,3,0,136,0,0,0,0,0,0,185,3,0,0,0,185,5,129,64,95,129,218,237,129,229,100,0,3,185,5,0,0,129,102,111,118,0,0,0,0,0,0,0,0,0,0,185,3,0,0,0,185,3,0,0,0,0,0,0,132,129,2,0,0,0,0,128,192,128,164,0,186,0,1,255,189,0,255,255,255,255,255,136,0,0,128,191,136,0,0,128,191,0,3,134,0,0,160,0,3,134,0,0,160,0,4,4,4,190,190,186,1,185,6,185,1,184,0,186,2,129,128,2,129,144,1,185,1,184,0,136,0,0,200,65,190,0,190,0];
+        let stereo = vec![185,23,185,7,185,12,1,2,136,0,0,122,68,1,0,1,1,10,5,0,190,0,185,11,186,5,3,1,2,4,5,0,0,185,5,0,2,136,0,0,0,63,3,1,185,4,0,3,136,205,204,204,62,3,185,2,0,134,255,255,0,0,185,2,0,133,0,1,185,3,0,50,2,185,2,1,0,185,5,1,128,210,128,200,1,1,185,2,1,128,200,185,6,255,0,1,0,1,1,185,6,1,0,0,55,0,185,3,0,2,127,185,7,1,128,250,129,244,1,128,250,129,244,1,185,6,1,11,10,22,15,5,185,4,1,33,22,63,185,6,20,4,1,8,2,0,2,255,1,0,190,190,190,190,1,185,5,189,0,189,0,190,16,16,0,3,255,255,1,190,1,190,190,190,190,190,190];
+
+        let align_val = rnop::Value::parse(&align).unwrap();
+        println!("{align_val:?}");
+        let align = RnopDeserializer::deserialize::<ImageAlignProperties>(&align).unwrap();
+        /*
+        let cam_l = RnopDeserializer::deserialize::<CameraProperties>(&cam_l).unwrap();
+        let cam_r = RnopDeserializer::deserialize::<CameraProperties>(&cam_r).unwrap();
+        let cam_c = RnopDeserializer::deserialize::<CameraProperties>(&cam_c).unwrap();
+        let stereo = RnopDeserializer::deserialize::<CameraProperties>(&stereo).unwrap();
+        */
+
+        //panic!("{align:?}");
     }
 }
 
@@ -5257,12 +7408,24 @@ mod rpc {
             self.call_untyped("setPipelineSchema", [val].into_iter()).await
         }
 
-        pub async fn wait_for_device_ready(&mut self) -> Result<rmpv::Value, rmpv::Value> {
-            self.call_untyped("waitForDeviceReady", [].into_iter()).await
+        pub async fn wait_for_device_ready(&mut self) -> Result<(), String> {
+            let (ok, err_msg): (bool, String) = self.call::<_, String>("waitForDeviceReady", [].into_iter()).await?;
+
+            if ok {
+                Ok(())
+            } else {
+                Err(err_msg)
+            }
         }
 
-        pub async fn build_pipeline(&mut self) -> Result<rmpv::Value, rmpv::Value> {
-            self.call_untyped("buildPipeline", [].into_iter()).await
+        pub async fn build_pipeline(&mut self) -> Result<(), String> {
+            let (ok, err_msg): (bool, String) = self.call::<_, String>("buildPipeline", [].into_iter()).await?;
+
+            if ok {
+                Ok(())
+            } else {
+                Err(err_msg)
+            }
         }
 
         pub async fn start_pipeline(&mut self) -> Result<rmpv::Value, rmpv::Value> {
@@ -5761,3 +7924,17 @@ pub mod logger {
         }
     }
 }
+
+
+
+/*
+{NodeConnection { input_id: 2, input_name: "left", input_group: None, output_id: 0, output_name: "0", output_group: Some("dynamicOutputs") }, NodeConnection { input_id: 3, input_name: "input", input_group: None, output_id: 2, output_name: "depth", output_group: None }, NodeConnection { input_id: 6, input_name: "in", input_group: None, output_id: 4, output_name: "0", output_group: Some("dynamicOutputs") }, NodeConnection { input_id: 5, input_name: "in", input_group: None, output_id: 3, output_name: "outputAligned", output_group: None }, NodeConnection { input_id: 2, input_name: "right", input_group: None, output_id: 1, output_name: "0", output_group: Some("dynamicOutputs") }, NodeConnection { input_id: 3, input_name: "inputAlignTo", input_group: None, output_id: 4, output_name: "0", output_group: Some("dynamicOutputs") }}
+*/
+
+// TODO: look at this later
+// this uses imagealign without sync
+// sync will need to be used in order to get rgbd data however.
+/*
+ * Schema dump: {"bridges":[],"connections":[{"node1Id":4,"node1Output":"outputAligned","node1OutputGroup":"","node2Id":7,"node2Input":"in","node2InputGroup":""},{"node1Id":3,"node1Output":"depth","node1OutputGroup":"","node2Id":4,"node2Input":"input","node2InputGroup":""},{"node1Id":2,"node1Output":"0","node1OutputGroup":"dynamicOutputs","node2Id":3,"node2Input":"right","node2InputGroup":""},{"node1Id":1,"node1Output":"0","node1OutputGroup":"dynamicOutputs","node2Id":3,"node2Input":"left","node2InputGroup":""},{"node1Id":0,"node1Output":"0","node1OutputGroup":"dynamicOutputs","node2Id":5,"node2Input":"in","node2InputGroup":""},{"node1Id":0,"node1Output":"0","node1OutputGroup":"dynamicOutputs","node2Id":4,"node2Input":"inputAlignTo","node2InputGroup":""}],"globalProperties":{"calibData":null,"cameraSocketTuningBlobSize":[],"cameraSocketTuningBlobUri":[],"cameraTuningBlobSize":null,"cameraTuningBlobUri":"","eepromId":0,"leonCssFrequencyHz":700000000.0,"leonMssFrequencyHz":700000000.0,"pipelineName":null,"pipelineVersion":null,"sippBufferSize":18432,"sippDmaBufferSize":16384,"xlinkChunkSize":-1},"nodes":[[7,{"alias":"","deviceId":"19443010A1A1872D00","deviceNode":true,"id":7,"ioInfo":[[["","pipelineEventOutput"],{"blocking":false,"group":"","id":44,"name":"pipelineEventOutput","queueSize":8,"type":0,"waitForMessage":false}],[["","in"],{"blocking":true,"group":"","id":43,"name":"in","queueSize":3,"type":3,"waitForMessage":false}]],"logLevel":0,"name":"XLinkOut","parentId":-1,"properties":[185,5,136,0,0,128,191,189,19,95,95,120,95,52,95,111,117,116,112,117,116,65,108,105,103,110,101,100,0,255,255]}],[5,{"alias":"","deviceId":"19443010A1A1872D00","deviceNode":true,"id":5,"ioInfo":[[["","pipelineEventOutput"],{"blocking":false,"group":"","id":40,"name":"pipelineEventOutput","queueSize":8,"type":0,"waitForMessage":false}],[["","in"],{"blocking":true,"group":"","id":39,"name":"in","queueSize":3,"type":3,"waitForMessage":false}]],"logLevel":0,"name":"XLinkOut","parentId":-1,"properties":[185,5,136,0,0,128,191,189,7,95,95,120,95,48,95,48,0,255,255]}],[4,{"alias":"","deviceId":"19443010A1A1872D00","deviceNode":true,"id":4,"ioInfo":[[["","passthroughInput"],{"blocking":false,"group":"","id":38,"name":"passthroughInput","queueSize":8,"type":0,"waitForMessage":false}],[["","outputAligned"],{"blocking":false,"group":"","id":37,"name":"outputAligned","queueSize":8,"type":0,"waitForMessage":false}],[["","pipelineEventOutput"],{"blocking":false,"group":"","id":36,"name":"pipelineEventOutput","queueSize":8,"type":0,"waitForMessage":false}],[["","inputAlignTo"],{"blocking":false,"group":"","id":35,"name":"inputAlignTo","queueSize":1,"type":3,"waitForMessage":true}],[["","input"],{"blocking":false,"group":"","id":34,"name":"input","queueSize":4,"type":3,"waitForMessage":false}],[["","inputConfig"],{"blocking":false,"group":"","id":33,"name":"inputConfig","queueSize":4,"type":3,"waitForMessage":false}]],"logLevel":0,"name":"ImageAlign","parentId":-1,"properties":[185,8,185,1,0,4,0,0,188,0,255,1,2]}],[3,{"alias":"","deviceId":"19443010A1A1872D00","deviceNode":true,"id":3,"ioInfo":[[["","confidenceMap"],{"blocking":false,"group":"","id":32,"name":"confidenceMap","queueSize":8,"type":0,"waitForMessage":false}],[["","debugExtDispLrCheckIt2"],{"blocking":false,"group":"","id":30,"name":"debugExtDispLrCheckIt2","queueSize":8,"type":0,"waitForMessage":false}],[["","debugDispLrCheckIt2"],{"blocking":false,"group":"","id":28,"name":"debugDispLrCheckIt2","queueSize":8,"type":0,"waitForMessage":false}],[["","rectifiedLeft"],{"blocking":false,"group":"","id":24,"name":"rectifiedLeft","queueSize":8,"type":0,"waitForMessage":false}],[["","syncedRight"],{"blocking":false,"group":"","id":23,"name":"syncedRight","queueSize":8,"type":0,"waitForMessage":false}],[["","syncedLeft"],{"blocking":false,"group":"","id":22,"name":"syncedLeft","queueSize":8,"type":0,"waitForMessage":false}],[["","disparity"],{"blocking":false,"group":"","id":21,"name":"disparity","queueSize":8,"type":0,"waitForMessage":false}],[["","debugDispCostDump"],{"blocking":false,"group":"","id":31,"name":"debugDispCostDump","queueSize":8,"type":0,"waitForMessage":false}],[["","depth"],{"blocking":false,"group":"","id":20,"name":"depth","queueSize":8,"type":0,"waitForMessage":false}],[["","pipelineEventOutput"],{"blocking":false,"group":"","id":19,"name":"pipelineEventOutput","queueSize":8,"type":0,"waitForMessage":false}],[["","outConfig"],{"blocking":false,"group":"","id":26,"name":"outConfig","queueSize":8,"type":0,"waitForMessage":false}],[["","right"],{"blocking":true,"group":"","id":18,"name":"right","queueSize":3,"type":3,"waitForMessage":false}],[["","left"],{"blocking":true,"group":"","id":17,"name":"left","queueSize":3,"type":3,"waitForMessage":false}],[["","rectifiedRight"],{"blocking":false,"group":"","id":25,"name":"rectifiedRight","queueSize":8,"type":0,"waitForMessage":false}],[["","inputAlignTo"],{"blocking":false,"group":"","id":16,"name":"inputAlignTo","queueSize":1,"type":3,"waitForMessage":true}],[["","debugExtDispLrCheckIt1"],{"blocking":false,"group":"","id":29,"name":"debugExtDispLrCheckIt1","queueSize":8,"type":0,"waitForMessage":false}],[["","debugDispLrCheckIt1"],{"blocking":false,"group":"","id":27,"name":"debugDispLrCheckIt1","queueSize":8,"type":0,"waitForMessage":false}],[["","inputConfig"],{"blocking":true,"group":"","id":15,"name":"inputConfig","queueSize":3,"type":3,"waitForMessage":false}]],"logLevel":0,"name":"StereoDepth","parentId":-1,"properties":[185,23,185,7,185,12,1,2,136,0,0,122,68,1,0,1,1,10,5,0,190,0,185,11,186,5,3,1,2,4,5,0,0,185,5,0,2,136,0,0,0,63,3,1,185,4,0,3,136,205,204,204,62,3,185,2,0,134,255,255,0,0,185,2,0,133,0,1,185,3,0,50,2,185,2,1,0,185,5,1,128,210,128,200,1,1,185,2,1,128,200,185,6,255,0,1,0,1,1,185,6,1,0,0,55,0,185,3,0,2,127,185,7,1,128,250,129,244,1,128,250,129,244,1,185,6,1,11,10,22,15,5,185,4,1,33,22,63,185,6,20,4,1,8,2,0,2,255,1,0,190,190,190,190,1,185,5,189,0,189,0,190,16,16,0,3,255,255,1,190,1,190,190,190,190,190,190]}],[2,{"alias":"","deviceId":"19443010A1A1872D00","deviceNode":true,"id":2,"ioInfo":[[["dynamicOutputs","0"],{"blocking":false,"group":"dynamicOutputs","id":14,"name":"0","queueSize":8,"type":0,"waitForMessage":false}],[["","pipelineEventOutput"],{"blocking":false,"group":"","id":12,"name":"pipelineEventOutput","queueSize":8,"type":0,"waitForMessage":false}],[["","raw"],{"blocking":false,"group":"","id":13,"name":"raw","queueSize":8,"type":0,"waitForMessage":false}],[["","mockIsp"],{"blocking":true,"group":"","id":11,"name":"mockIsp","queueSize":8,"type":3,"waitForMessage":false}],[["","inputControl"],{"blocking":true,"group":"","id":10,"name":"inputControl","queueSize":3,"type":3,"waitForMessage":false}]],"logLevel":0,"name":"Camera","parentId":-1,"properties":[185,22,185,33,0,3,0,136,0,0,0,0,102,111,185,3,0,0,0,185,5,0,0,0,0,0,185,5,0,0,0,0,0,128,129,2,0,0,0,0,0,0,0,185,3,0,48,121,185,3,133,229,100,134,32,59,0,230,129,23,117,0,0,0,72,124,128,218,0,0,0,72,124,0,186,0,2,255,189,0,255,255,255,255,255,136,0,0,128,191,136,0,0,128,191,0,3,134,0,0,160,0,3,134,0,0,160,0,4,4,4,190,190,186,1,185,6,185,1,184,0,186,2,129,128,2,129,144,1,185,1,184,0,136,0,0,200,65,190,0,190,0]}],[1,{"alias":"","deviceId":"19443010A1A1872D00","deviceNode":true,"id":1,"ioInfo":[[["dynamicOutputs","0"],{"blocking":false,"group":"dynamicOutputs","id":9,"name":"0","queueSize":8,"type":0,"waitForMessage":false}],[["","pipelineEventOutput"],{"blocking":false,"group":"","id":7,"name":"pipelineEventOutput","queueSize":8,"type":0,"waitForMessage":false}],[["","raw"],{"blocking":false,"group":"","id":8,"name":"raw","queueSize":8,"type":0,"waitForMessage":false}],[["","mockIsp"],{"blocking":true,"group":"","id":6,"name":"mockIsp","queueSize":8,"type":3,"waitForMessage":false}],[["","inputControl"],{"blocking":true,"group":"","id":5,"name":"inputControl","queueSize":3,"type":3,"waitForMessage":false}]],"logLevel":0,"name":"Camera","parentId":-1,"properties":[185,22,185,33,0,3,0,136,0,0,0,0,0,0,185,3,0,0,0,185,5,129,64,95,129,218,237,129,229,100,0,3,185,5,0,0,129,102,111,118,0,0,0,0,0,0,0,0,0,0,185,3,0,0,0,185,3,0,0,0,0,0,0,132,129,2,0,0,0,0,128,192,128,164,0,186,0,1,255,189,0,255,255,255,255,255,136,0,0,128,191,136,0,0,128,191,0,3,134,0,0,160,0,3,134,0,0,160,0,4,4,4,190,190,186,1,185,6,185,1,184,0,186,2,129,128,2,129,144,1,185,1,184,0,136,0,0,200,65,190,0,190,0]}],[0,{"alias":"","deviceId":"19443010A1A1872D00","deviceNode":true,"id":0,"ioInfo":[[["dynamicOutputs","0"],{"blocking":false,"group":"dynamicOutputs","id":4,"name":"0","queueSize":8,"type":0,"waitForMessage":false}],[["","pipelineEventOutput"],{"blocking":false,"group":"","id":2,"name":"pipelineEventOutput","queueSize":8,"type":0,"waitForMessage":false}],[["","raw"],{"blocking":false,"group":"","id":3,"name":"raw","queueSize":8,"type":0,"waitForMessage":false}],[["","mockIsp"],{"blocking":true,"group":"","id":1,"name":"mockIsp","queueSize":8,"type":3,"waitForMessage":false}],[["","inputControl"],{"blocking":true,"group":"","id":0,"name":"inputControl","queueSize":3,"type":3,"waitForMessage":false}]],"logLevel":0,"name":"Camera","parentId":-1,"properties":[185,22,185,33,0,3,0,136,0,0,0,0,0,0,185,3,0,0,0,185,5,0,0,0,0,0,185,5,129,190,91,0,0,0,129,190,91,0,0,0,0,0,0,98,110,50,185,3,0,0,0,185,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,186,0,0,255,189,0,255,255,255,255,255,136,0,0,128,191,136,0,0,128,191,0,3,134,0,0,160,0,3,134,0,0,160,0,4,4,4,190,190,186,1,185,6,185,1,184,0,186,2,129,0,5,129,192,3,185,1,184,0,136,0,0,200,65,22,0,1,0]}]]}
+
+*/
