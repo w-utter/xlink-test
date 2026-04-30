@@ -1161,13 +1161,11 @@ async fn main() {
             (pipe.build(DEVICE_ID), xlink_out)
         }
 
-        fn pcl_rgb_imu_pipeline() -> (rpc::PipelineSchema, pipeline::OutputQueue<pipeline::CameraFrame, pipeline::RnopDeserializer, pipeline::queue_state::Pending>, /*pipeline::OutputQueue<pipeline::PipelineEvent, pipeline::RnopDeserializer, pipeline::queue_state::Pending>*/) {
+        fn pcl_rgb_imu_pipeline() -> (rpc::PipelineSchema, pipeline::OutputQueue<pipeline::MessageGroup, pipeline::RnopDeserializer, pipeline::queue_state::Pending>, pipeline::OutputQueue<pipeline::ImuData, pipeline::RnopDeserializer, pipeline::queue_state::Pending>) {
             const CAMERA_SIZE: (u32, u32) = (1280, 720);
-            const CAMERA_FPS: f32 = 30.;
+            const CAMERA_FPS: f32 = 15.;
 
             let mut pipe = pipeline::Pipeline::new();
-
-
 
             // COLOR INPUT START
 
@@ -1349,43 +1347,41 @@ async fn main() {
             pipe.link(cam_left, stereo.input().left);
             pipe.link(cam_right, stereo.input().right);
 
-            // its an issue with image align ?
-            //let mut align = pipe.create_debug_node::<pipeline::ImageAlign>();
             let mut align = pipe.create_node::<pipeline::ImageAlign>();
-
-
-            align.properties_mut().num_frames_pool = 8;
-            align.properties_mut().num_shaves = 4;
 
             pipe.link(stereo.output().depth, align.input().input);
             pipe.link(color_cam.clone(), align.input().align_to);
 
-            /*
             let mut pointcloud = pipe.create_node::<pipeline::Pointcloud>();
             pipe.link(align.output().aligned, pointcloud.input().1);
-            */
 
             // STEREO INPUT END
 
-            /*
+
+            let mut imu = pipe.create_node::<pipeline::Imu>();
+
+
+            imu.properties_mut().enable_sensor(pipeline::ImuSensorKind::Accelerometer, 15);
+            imu.properties_mut().enable_sensor(pipeline::ImuSensorKind::GyroscopeCalibrated, 15);
+
+
             let group = pipeline::MsgGroup::new()
-                                    .with_msg(color_cam.clone(), "rgb")
+                                    .with_msg(color_cam, "rgb")
                                     //.with_msg(imu.output(), "imu")
-                                    //.with_msg(pointcloud.output().0, "pcl")
-                                    //.with_msg(align.output().aligned, "depth")
+                                    .with_msg(pointcloud.output().0, "pcl")
                                     ;
 
             let sync = pipe.create_sync_node(group);
             sync.register(&mut pipe);
-            */
 
-            let mut out = pipe.create_node::<pipeline::XLinkOut>();
-            let mut debug = pipe.create_node::<pipeline::XLinkOut>(); 
+            let mut group_out = pipe.create_node::<pipeline::XLinkOut>();
+            let mut imu_out = pipe.create_node::<pipeline::XLinkOut>();
+            
 
-            let xlink_out = pipe.create_output_queue(color_cam, &mut out);
-            //let debug_out = pipe.create_output_queue(align.debug_out(), &mut debug);
+            let xlink_sync_out = pipe.create_output_queue(sync.output(), &mut group_out);
+            let xlink_imu_out = pipe.create_output_queue(imu.output(), &mut imu_out);
 
-            (pipe.build(DEVICE_ID), xlink_out, /*debug_out*/)
+            (pipe.build(DEVICE_ID), xlink_sync_out, xlink_imu_out)
         }
 
         fn debug_pipeline() -> (rpc::PipelineSchema, pipeline::OutputQueue<pipeline::PipelineEvent, pipeline::RnopDeserializer, pipeline::queue_state::Pending>) {
@@ -1408,13 +1404,14 @@ async fn main() {
 
         //let (schema, out) = stereo_pipeline();
         //let (schema, out1, out2) = camera_pipeline_dynamic();
-        let (schema, depth, color) = rgbd_pipeline();
+        //let (schema, depth, color) = rgbd_pipeline();
         //let (schema, out) = pointcloud_pipeline();
         //let (schema, out) = manip_pipeline();
         //let (schema, depth, color) = encoded_rgbd_pipeline();
         //let (schema, out, /*debug*/) = pcl_rgb_imu_pipeline();
         //let (schema, out) = encoding_pipeline();
         //let (schema, out) = debug_pipeline();
+        let (schema, group, imu) = pcl_rgb_imu_pipeline();
 
         //connection.create_stream("__x_0_out", bootloader::MAX_PACKET_SIZE).await.unwrap();
 
@@ -1431,8 +1428,12 @@ async fn main() {
         let ret = rpc.start_pipeline().await;
         println!("{ret:?}");
 
+        let mut group = connection.wait_for_output_queue(group).await;
+        let mut imu = connection.wait_for_output_queue(imu).await;
+        /*
         let mut depth_queue = connection.wait_for_output_queue(depth).await;
         let mut color_queue = connection.wait_for_output_queue(color).await;
+        */
 
         //println!("out: {out:?}");
         //let mut queue = connection.wait_for_output_queue(out).await;
@@ -1466,6 +1467,14 @@ async fn main() {
                         }
                     }
                 }
+                res = group.read() => {
+                    let res = res.unwrap();
+                    println!("{res:?}");
+                }
+                res = imu.read() => {
+                    let res = res.unwrap();
+                    println!("{res:?}");
+                }
                 /*
                 res = depth_queue.read() => {
                     let res = res.unwrap();
@@ -1489,12 +1498,14 @@ async fn main() {
                     //println!("\nread: {} {} {:?}\n", res.metadata.len(), res.buffer.len(), res.ty);
                 }
                 */
+                /*
                 color = color_queue.read() => {
                     println!("color");
                 }
                 depth = depth_queue.read() => {
                     println!("depth");
                 }
+                */
                 /*
                 res = queue.read() => {
                     let res = res.unwrap();
@@ -6845,6 +6856,11 @@ mod pipeline {
         inner: T,
         name: &'a str,
     }
+
+    trait Groupable {}
+
+    impl <'a, T> Groupable for Grouped<'a, T> {}
+    impl <G1: Groupable, G2: Groupable> Groupable for (G1, G2) {}
 
     impl MsgGroup<()> {
         pub fn new() -> Self {
