@@ -2160,13 +2160,6 @@ impl IpDevice {
                 loop {
 
                 }
-
-
-
-                todo!()
-
-                // gotta bootBootloader
-                //
             }
             s => todo!("boot from {s:?}"),
         }
@@ -5701,6 +5694,19 @@ mod pipeline {
         Custom = 5,
     }
 
+    impl LengthUnit {
+        pub fn unit_multiplier(&self) -> f32 {
+            match self {
+                Self::Meter => 1.,
+                Self::Centimeter => 100.,
+                Self::Millimeter => 1000.,
+                Self::Inch => 39.3701,
+                Self::Foot => 3.28084,
+                Self::Custom => 1.,
+            }
+        }
+    }
+
     pub type DepthUnit = LengthUnit;
 
     #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
@@ -7782,7 +7788,7 @@ mod rpc {
         }
     }
 
-    #[derive(serde_repr::Deserialize_repr, serde_repr::Serialize_repr, Debug, Hash, PartialEq, Eq, Default)]
+    #[derive(serde_repr::Deserialize_repr, serde_repr::Serialize_repr, Debug, Hash, PartialEq, Eq, Default, Clone, Copy)]
     #[repr(i32)]
     pub enum CameraBoardSocket {
         #[default]
@@ -7932,43 +7938,43 @@ mod rpc {
 
     #[derive(serde::Deserialize, serde::Serialize, Debug)]
     pub struct EepromData {
-        version: u32,
+        pub(crate) version: u32,
         #[serde(rename = "productName")]
-        product_name: String,
+        pub(crate) product_name: String,
         #[serde(rename = "boardCustom")]
-        board_custom: String,
+        pub(crate) board_custom: String,
         #[serde(rename = "boardName")]
-        board_name: String,
+        pub(crate) board_name: String,
         #[serde(rename = "boardRev")]
-        board_rev: String,
+        pub(crate) board_rev: String,
         #[serde(rename = "boardConf")]
-        board_conf: String,
+        pub(crate) board_conf: String,
         #[serde(rename = "hardwareConf")]
-        hardware_conf: String,
+        pub(crate) hardware_conf: String,
         #[serde(rename = "deviceName")]
-        device_name: String,
+        pub(crate) device_name: String,
         #[serde(rename = "batchName")]
-        batch_name: Option<String>,
+        pub(crate) batch_name: Option<String>,
         #[serde(rename = "batchTime")]
-        batch_time: u64,
+        pub(crate) batch_time: u64,
         #[serde(rename = "boardOptions")]
-        board_options: u32,
+        pub(crate) board_options: u32,
         #[serde(rename = "cameraData")]
-        camera_data: Vec<(CameraBoardSocket, CameraInfo)>,
+        pub(crate) camera_data: Vec<(CameraBoardSocket, CameraInfo)>,
         #[serde(rename = "stereoRectificationData")]
-        stereo_rectification: StereoRectification,
+        pub(crate) stereo_rectification: StereoRectification,
         #[serde(rename = "imuExtrinsics")]
-        imu_extrinsics: Extrinsics,
+        pub(crate) imu_extrinsics: Extrinsics,
         #[serde(rename = "housingExtrinsics")]
-        housing_extrinsisc: Extrinsics,
+        pub(crate) housing_extrinsisc: Extrinsics,
         #[serde(rename = "miscellaneousData")]
-        misc_data: Vec<u8>,
+        pub(crate) misc_data: Vec<u8>,
         #[serde(rename = "stereoUseSpecTranslation")]
-        stereo_use_spec_translation: bool,
+        pub(crate) stereo_use_spec_translation: bool,
         #[serde(rename = "stereoEnableDistortionCorrection")]
-        stereo_enable_distortion_correction: bool,
+        pub(crate) stereo_enable_distortion_correction: bool,
         #[serde(rename = "verticalCameraSocket")]
-        vertical_camera_socket: CameraBoardSocket,
+        pub(crate) vertical_camera_socket: CameraBoardSocket,
     }
 
     #[derive(serde::Deserialize, serde::Serialize, Debug)]
@@ -7985,19 +7991,19 @@ mod rpc {
 
     #[derive(serde::Deserialize, serde::Serialize, Debug)]
     pub struct CameraInfo {
-        width: u16,
-        height: u16,
+        pub(crate) width: u16,
+        pub(crate) height: u16,
         #[serde(rename = "lensPosition")]
-        lens_position: u8,
+        pub(crate) lens_position: u8,
         #[serde(rename = "intrinsicMatrix")]
-        intrinsic_matrix: Vec<Vec<f32>>,
+        pub(crate) intrinsic_matrix: Vec<Vec<f32>>,
         #[serde(rename = "distortionCoeff")]
-        distortion_coef: Vec<f32>,
-        extrinsics: Extrinsics,
+        pub(crate) distortion_coef: Vec<f32>,
+        pub(crate) extrinsics: Extrinsics,
         #[serde(rename = "specHfovDeg")]
-        fov_deg: f32,
+        pub(crate) fov_deg: f32,
         #[serde(rename = "cameraType")]
-        ty: CameraModel,
+        pub(crate) ty: CameraModel,
     }
 
     #[derive(serde_repr::Deserialize_repr, serde_repr::Serialize_repr, Debug, PartialEq)]
@@ -8012,19 +8018,19 @@ mod rpc {
     #[derive(serde::Deserialize, serde::Serialize, Debug)]
     pub struct Extrinsics {
         #[serde(rename = "rotationMatrix")]
-        rotation_mtx: Vec<Vec<f32>>,
-        translation: Point3f,
+        pub(crate) rotation_mtx: Vec<Vec<f32>>,
+        pub(crate) translation: Point3f,
         #[serde(rename = "specTranslation")]
-        spec_translation: Point3f,
+        pub(crate) spec_translation: Point3f,
         #[serde(rename = "toCameraSocket")]
-        to_camera_socket: CameraBoardSocket,
+        pub(crate) to_camera_socket: CameraBoardSocket,
     }
 
     #[derive(serde::Deserialize, serde::Serialize, Debug)]
     pub struct Point3f {
-        x: f32,
-        y: f32,
-        z: f32,
+        pub x: f32,
+        pub y: f32,
+        pub z: f32,
     }
 
     #[derive(serde::Deserialize, Debug)]
@@ -8599,8 +8605,127 @@ fn image_align() {
     assert_eq!(stereo, stereo_props);
 }
 
-/*
-[19443010A1A1872D00] [169.254.1.222] [1777463831.205] [host] [trace] RPC: [1,1,16527326580805871264,[{"bridges":[],"connections":[{"node1Id":4,"node1Output":"outputAligned","node1OutputGroup":"","node2Id":7,"node2Input":"in","node2InputGroup":""},{"node1Id":3,"node1Output":"depth","node1OutputGroup":"","node2Id":4,"node2Input":"input","node2InputGroup":""},{"node1Id":2,"node1Output":"0","node1OutputGroup":"dynamicOutputs","node2Id":3,"node2Input":"right","node2InputGroup":""},{"node1Id":1,"node1Output":"0","node1OutputGroup":"dynamicOutputs","node2Id":3,"node2Input":"left","node2InputGroup":""},{"node1Id":0,"node1Output":"0","node1OutputGroup":"dynamicOutputs","node2Id":5,"node2Input":"in","node2InputGroup":""},{"node1Id":0,"node1Output":"0","node1OutputGroup":"dynamicOutputs","node2Id":4,"node2Input":"inputAlignTo","node2InputGroup":""}],"globalProperties":{"calibData":null,"cameraSocketTuningBlobSize":[],"cameraSocketTuningBlobUri":[],"cameraTuningBlobSize":null,"cameraTuningBlobUri":"","eepromId":0,"leonCssFrequencyHz":700000000.0,"leonMssFrequencyHz":700000000.0,"pipelineName":null,"pipelineVersion":null,"sippBufferSize":18432,"sippDmaBufferSize":16384,"xlinkChunkSize":-1},"nodes":[[7,{"alias":"","deviceId":"19443010A1A1872D00","deviceNode":true,"id":7,"ioInfo":[[["","pipelineEventOutput"],{"blocking":false,"group":"","id":44,"name":"pipelineEventOutput","queueSize":8,"type":0,"waitForMessage":false}],[["","in"],{"blocking":true,"group":"","id":43,"name":"in","queueSize":3,"type":3,"waitForMessage":false}]],"logLevel":0,"name":"XLinkOut","parentId":-1,"properties":[185,5,136,0,0,128,191,189,19,95,95,120,95,52,95,111,117,116,112,117,116,65,108,105,103,110,101,100,0,255,255]}],[5,{"alias":"","deviceId":"19443010A1A1872D00","deviceNode":true,"id":5,"ioInfo":[[["","pipelineEventOutput"],{"blocking":false,"group":"","id":40,"name":"pipelineEventOutput","queueSize":8,"type":0,"waitForMessage":false}],[["","in"],{"blocking":true,"group":"","id":39,"name":"in","queueSize":3,"type":3,"waitForMessage":false}]],"logLevel":0,"name":"XLinkOut","parentId":-1,"properties":[185,5,136,0,0,128,191,189,7,95,95,120,95,48,95,48,0,255,255]}],[4,{"alias":"","deviceId":"19443010A1A1872D00","deviceNode":true,"id":4,"ioInfo":[[["","passthroughInput"],{"blocking":false,"group":"","id":38,"name":"passthroughInput","queueSize":8,"type":0,"waitForMessage":false}],[["","outputAligned"],{"blocking":false,"group":"","id":37,"name":"outputAligned","queueSize":8,"type":0,"waitForMessage":false}],[["","pipelineEventOutput"],{"blocking":false,"group":"","id":36,"name":"pipelineEventOutput","queueSize":8,"type":0,"waitForMessage":false}],[["","inputAlignTo"],{"blocking":false,"group":"","id":35,"name":"inputAlignTo","queueSize":1,"type":3,"waitForMessage":true}],[["","input"],{"blocking":false,"group":"","id":34,"name":"input","queueSize":4,"type":3,"waitForMessage":false}],[["","inputConfig"],{"blocking":false,"group":"","id":33,"name":"inputConfig","queueSize":4,"type":3,"waitForMessage":false}]],"logLevel":0,"name":"ImageAlign","parentId":-1,"properties":[185,8,185,1,0,4,0,0,188,0,255,1,2]}],[3,{"alias":"","deviceId":"19443010A1A1872D00","deviceNode":true,"id":3,"ioInfo":[[["","confidenceMap"],{"blocking":false,"group":"","id":32,"name":"confidenceMap","queueSize":8,"type":0,"waitForMessage":false}],[["","debugExtDispLrCheckIt2"],{"blocking":false,"group":"","id":30,"name":"debugExtDispLrCheckIt2","queueSize":8,"type":0,"waitForMessage":false}],[["","debugDispLrCheckIt2"],{"blocking":false,"group":"","id":28,"name":"debugDispLrCheckIt2","queueSize":8,"type":0,"waitForMessage":false}],[["","rectifiedLeft"],{"blocking":false,"group":"","id":24,"name":"rectifiedLeft","queueSize":8,"type":0,"waitForMessage":false}],[["","syncedRight"],{"blocking":false,"group":"","id":23,"name":"syncedRight","queueSize":8,"type":0,"waitForMessage":false}],[["","syncedLeft"],{"blocking":false,"group":"","id":22,"name":"syncedLeft","queueSize":8,"type":0,"waitForMessage":false}],[["","disparity"],{"blocking":false,"group":"","id":21,"name":"disparity","queueSize":8,"type":0,"waitForMessage":false}],[["","debugDispCostDump"],{"blocking":false,"group":"","id":31,"name":"debugDispCostDump","queueSize":8,"type":0,"waitForMessage":false}],[["","depth"],{"blocking":false,"group":"","id":20,"name":"depth","queueSize":8,"type":0,"waitForMessage":false}],[["","pipelineEventOutput"],{"blocking":false,"group":"","id":19,"name":"pipelineEventOutput","queueSize":8,"type":0,"waitForMessage":false}],[["","outConfig"],{"blocking":false,"group":"","id":26,"name":"outConfig","queueSize":8,"type":0,"waitForMessage":false}],[["","right"],{"blocking":true,"group":"","id":18,"name":"right","queueSize":3,"type":3,"waitForMessage":false}],[["","left"],{"blocking":true,"group":"","id":17,"name":"left","queueSize":3,"type":3,"waitForMessage":false}],[["","rectifiedRight"],{"blocking":false,"group":"","id":25,"name":"rectifiedRight","queueSize":8,"type":0,"waitForMessage":false}],[["","inputAlignTo"],{"blocking":false,"group":"","id":16,"name":"inputAlignTo","queueSize":1,"type":3,"waitForMessage":true}],[["","debugExtDispLrCheckIt1"],{"blocking":false,"group":"","id":29,"name":"debugExtDispLrCheckIt1","queueSize":8,"type":0,"waitForMessage":false}],[["","debugDispLrCheckIt1"],{"blocking":false,"group":"","id":27,"name":"debugDispLrCheckIt1","queueSize":8,"type":0,"waitForMessage":false}],[["","inputConfig"],{"blocking":true,"group":"","id":15,"name":"inputConfig","queueSize":3,"type":3,"waitForMessage":false}]],"logLevel":0,"name":"StereoDepth","parentId":-1,"properties":[185,23,185,7,185,12,1,2,136,0,0,122,68,1,0,1,1,10,5,0,190,0,185,11,186,5,3,1,2,4,5,0,0,185,5,0,2,136,0,0,0,63,3,1,185,4,0,3,136,205,204,204,62,3,185,2,0,134,255,255,0,0,185,2,0,133,0,1,185,3,0,50,2,185,2,1,0,185,5,1,128,210,128,200,1,1,185,2,1,128,200,185,6,255,0,1,0,1,1,185,6,1,0,0,55,0,185,3,0,2,127,185,7,1,128,250,129,244,1,128,250,129,244,1,185,6,1,11,10,22,15,5,185,4,1,33,22,63,185,6,20,4,1,8,2,0,2,255,1,0,190,190,190,190,1,185,5,189,0,189,0,190,16,16,0,3,255,255,1,190,1,190,190,190,190,190,190]}],[2,{"alias":"","deviceId":"19443010A1A1872D00","deviceNode":true,"id":2,"ioInfo":[[["dynamicOutputs","0"],{"blocking":false,"group":"dynamicOutputs","id":14,"name":"0","queueSize":8,"type":0,"waitForMessage":false}],[["","pipelineEventOutput"],{"blocking":false,"group":"","id":12,"name":"pipelineEventOutput","queueSize":8,"type":0,"waitForMessage":false}],[["","raw"],{"blocking":false,"group":"","id":13,"name":"raw","queueSize":8,"type":0,"waitForMessage":false}],[["","mockIsp"],{"blocking":true,"group":"","id":11,"name":"mockIsp","queueSize":8,"type":3,"waitForMessage":false}],[["","inputControl"],{"blocking":true,"group":"","id":10,"name":"inputControl","queueSize":3,"type":3,"waitForMessage":false}]],"logLevel":0,"name":"Camera","parentId":-1,"properties":[185,22,185,33,0,3,0,136,0,0,0,0,102,111,185,3,0,0,0,185,5,0,0,0,0,0,185,5,0,0,0,0,0,128,129,2,0,0,0,0,0,0,0,185,3,0,48,105,185,3,133,131,97,134,32,59,64,5,129,34,123,0,0,0,72,108,128,186,0,0,0,72,108,0,186,0,2,255,189,0,255,255,255,255,255,136,0,0,128,191,136,0,0,128,191,0,3,134,0,0,160,0,3,134,0,0,160,0,4,4,4,190,190,186,1,185,6,185,1,184,0,186,2,129,128,2,129,144,1,185,1,184,0,136,0,0,200,65,190,0,190,0]}],[1,{"alias":"","deviceId":"19443010A1A1872D00","deviceNode":true,"id":1,"ioInfo":[[["dynamicOutputs","0"],{"blocking":false,"group":"dynamicOutputs","id":9,"name":"0","queueSize":8,"type":0,"waitForMessage":false}],[["","pipelineEventOutput"],{"blocking":false,"group":"","id":7,"name":"pipelineEventOutput","queueSize":8,"type":0,"waitForMessage":false}],[["","raw"],{"blocking":false,"group":"","id":8,"name":"raw","queueSize":8,"type":0,"waitForMessage":false}],[["","mockIsp"],{"blocking":true,"group":"","id":6,"name":"mockIsp","queueSize":8,"type":3,"waitForMessage":false}],[["","inputControl"],{"blocking":true,"group":"","id":5,"name":"inputControl","queueSize":3,"type":3,"waitForMessage":false}]],"logLevel":0,"name":"Camera","parentId":-1,"properties":[185,22,185,33,0,3,0,136,0,0,0,0,0,0,185,3,0,0,0,185,5,129,64,79,129,186,242,129,131,97,0,3,185,5,0,0,129,102,111,118,0,0,0,0,0,0,0,0,0,0,185,3,0,0,0,185,3,0,0,0,0,0,0,132,129,2,0,0,0,0,128,192,128,148,0,186,0,1,255,189,0,255,255,255,255,255,136,0,0,128,191,136,0,0,128,191,0,3,134,0,0,160,0,3,134,0,0,160,0,4,4,4,190,190,186,1,185,6,185,1,184,0,186,2,129,128,2,129,144,1,185,1,184,0,136,0,0,200,65,190,0,190,0]}],[0,{"alias":"","deviceId":"19443010A1A1872D00","deviceNode":true,"id":0,"ioInfo":[[["dynamicOutputs","0"],{"blocking":false,"group":"dynamicOutputs","id":4,"name":"0","queueSize":8,"type":0,"waitForMessage":false}],[["","pipelineEventOutput"],{"blocking":false,"group":"","id":2,"name":"pipelineEventOutput","queueSize":8,"type":0,"waitForMessage":false}],[["","raw"],{"blocking":false,"group":"","id":3,"name":"raw","queueSize":8,"type":0,"waitForMessage":false}],[["","mockIsp"],{"blocking":true,"group":"","id":1,"name":"mockIsp","queueSize":8,"type":3,"waitForMessage":false}],[["","inputControl"],{"blocking":true,"group":"","id":0,"name":"inputControl","queueSize":3,"type":3,"waitForMessage":false}]],"logLevel":0,"name":"Camera","parentId":-1,"properties":[185,22,185,33,0,3,0,136,0,0,0,0,0,0,185,3,0,0,0,185,5,0,0,0,0,0,185,5,129,127,254,0,0,0,129,127,254,0,0,0,0,0,0,115,128,152,128,130,185,3,0,0,0,185,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,186,0,0,255,189,0,255,255,255,255,255,136,0,0,128,191,136,0,0,128,191,0,3,134,0,0,160,0,3,134,0,0,160,0,4,4,4,190,190,186,1,185,6,185,1,184,0,186,2,129,0,5,129,192,3,185,1,184,0,136,0,0,200,65,22,0,1,0]}]]}]]
+mod calibration_handler {
+    use crate::rpc::{CameraBoardSocket, EepromData};
+    use crate::pipeline::LengthUnit;
 
+    const EEPROM_TRANSLATION_UNIT: LengthUnit = LengthUnit::Centimeter;
 
-*/
+    fn imu_to_camera_extrinsics(eeprom: &EepromData, camera_id: CameraBoardSocket, use_spec_translation: bool, unit: LengthUnit) -> Option<nalgebra::Matrix4<f32>> {
+        if matches!(camera_id, CameraBoardSocket::Auto) {
+            return None;
+        }
+
+        let mut imu_translation = self::imu_extrinsics(eeprom, use_spec_translation);
+
+        if eeprom.imu_extrinsics.to_camera_socket == camera_id {
+            self::scale_translation(&mut imu_translation, unit);
+            Some(imu_translation)
+        } else {
+            let camera_translation = self::camera_extrinsics(eeprom, eeprom.imu_extrinsics.to_camera_socket, camera_id, use_spec_translation, crate::pipeline::LengthUnit::Centimeter)?;
+            let mut res = camera_translation * imu_translation;
+            self::scale_translation(&mut res, unit);
+            Some(res)
+        }
+    }
+
+    fn camera_to_imu_extrinsics(eeprom: &EepromData, camera_id: CameraBoardSocket, use_spec_translation: bool, unit: LengthUnit) -> Option<nalgebra::Matrix4<f32>> {
+        let mut translation = self::imu_to_camera_extrinsics(eeprom, camera_id, use_spec_translation, unit)?;
+        if !translation.try_inverse_mut() {
+            return None
+        }
+        Some(translation)
+    }
+
+    fn imu_extrinsics(eeprom: &EepromData, use_spec_translation: bool) -> nalgebra::Matrix4<f32> {
+        let rotation = &eeprom.imu_extrinsics.rotation_mtx;
+
+        let translation = if use_spec_translation {
+            &eeprom.imu_extrinsics.spec_translation
+        } else {
+            &eeprom.imu_extrinsics.translation
+        };
+
+        nalgebra::Matrix4::new(
+            rotation[0][0], rotation[0][1], rotation[0][2], translation.x,
+            rotation[1][0], rotation[1][1], rotation[1][2], translation.y,
+            rotation[2][0], rotation[2][1], rotation[2][2], translation.z,
+            0., 0., 0., 1.,
+        )
+    }
+
+    // translation from camera `from` to camera `to`
+    fn camera_extrinsics(eeprom: &EepromData, to: CameraBoardSocket, from: CameraBoardSocket, use_spec_translation: bool, unit: LengthUnit) -> Option<nalgebra::Matrix4<f32>> {
+        let (origin_to, translate_to) = self::camera_extrinsics_to_origin(eeprom, to, use_spec_translation)?;
+        let (origin_from, mut translate_from) = self::camera_extrinsics_to_origin(eeprom, from, use_spec_translation)?;
+
+        if origin_to != origin_from {
+            return None;
+        }
+
+        if !translate_from.try_inverse_mut() {
+            return None;
+        }
+
+        let mut extrinsic = translate_from * translate_to;
+        self::scale_translation(&mut extrinsic, unit);
+        Some(extrinsic)
+    }
+
+    fn camera_extrinsics_to_origin(eeprom: &EepromData, cam: CameraBoardSocket, use_spec_translation: bool) -> Option<(CameraBoardSocket, nalgebra::Matrix4<f32>)> {
+        let Some(initial_camera_info) = eeprom.camera_data.iter().find(|(id, _)| *id == cam).map(|(_, info)| info) else {
+            return None;
+        };
+
+        let mut current_camera_info = initial_camera_info;
+        let mut depth = 0;
+        let mut prev_cam = cam;
+
+        let mut translation = nalgebra::Matrix4::identity();
+
+        while depth < 10 {
+            let to_socket = current_camera_info.extrinsics.to_camera_socket;
+            if matches!(to_socket, CameraBoardSocket::Auto) {
+                return Some((prev_cam, translation));
+            }
+
+            let rot = &current_camera_info.extrinsics.rotation_mtx;
+            let trans = if use_spec_translation {
+                &current_camera_info.extrinsics.spec_translation
+            } else {
+                &current_camera_info.extrinsics.translation
+            };
+
+            let new_translation = nalgebra::Matrix4::new(
+                rot[0][0], rot[0][1], rot[0][2], trans.x,
+                rot[1][0], rot[1][1], rot[1][2], trans.y,
+                rot[2][0], rot[2][1], rot[2][2], trans.z,
+                0., 0., 0., 1.,
+            );
+
+            translation = new_translation * translation;
+
+            let Some(camera_info) = eeprom.camera_data.iter().find(|(id, _)| *id == to_socket).map(|(_, info)| info) else {
+                return None;
+            };
+
+            prev_cam = to_socket;
+            current_camera_info = camera_info;
+            depth += 1;
+        }
+        None
+    }
+
+    fn scale_translation(translation: &mut nalgebra::Matrix4<f32>, unit: LengthUnit) {
+        let scale = unit.unit_multiplier() / self::EEPROM_TRANSLATION_UNIT.unit_multiplier();
+        if scale == 1. {
+            return;
+        }
+
+        for it in translation.column_mut(3) {
+            *it *= scale;
+        }
+    }
+}
+mod ros2 {
+}

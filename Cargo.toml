@@ -26,3 +26,6 @@ serde_repr = "0.1"
 rnop = {git = "https://github.com/w-utter/rnop", features = ["serde"]}
 
 opencv = {git = "https://github.com/twistedfall/opencv-rust", features = ["clang-runtime", "highgui", "imgproc"], default-features = false}
+
+r2r = {git = "https://github.com/ATIinc/r2r", branch = "kilted" }
+nalgebra = "0.34"
