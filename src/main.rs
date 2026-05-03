@@ -3964,7 +3964,7 @@ mod pipeline {
         timestamp: Timestamp,
         device_timestamp: Timestamp,
         sequence: i32,
-        packets: Vec<ImuPacket>,
+        pub packets: Vec<ImuPacket>,
     }
 
     impl NotAny for ImuData {}
@@ -3973,57 +3973,57 @@ mod pipeline {
     impl MetadataOnly for ImuData {}
 
     #[derive(serde::Deserialize, serde::Serialize, Debug)]
-    struct ImuPacket {
-        accelerometer: ImuAccelerometer,
-        gyroscope: ImuGyroscope,
-        magnetic_field: ImuMagneticField,
-        rotation_vector: ImuRotationVector,
+    pub struct ImuPacket {
+        pub accelerometer: ImuAccelerometer,
+        pub gyroscope: ImuGyroscope,
+        pub magnetic_field: ImuMagneticField,
+        pub rotation_vector: ImuRotationVector,
     }
 
     #[derive(serde::Deserialize, serde::Serialize, Debug)]
-    struct ImuAccelerometer {
-        x: f32,
-        y: f32,
-        z: f32,
+    pub struct ImuAccelerometer {
+        pub x: f32,
+        pub y: f32,
+        pub z: f32,
         sequence: i32,
-        accuracy: ImuAccuracy,
-        timestamp: Timestamp,
-        device_timestamp: Timestamp,
+        pub accuracy: ImuAccuracy,
+        pub timestamp: Timestamp,
+        pub device_timestamp: Timestamp,
     }
 
     #[derive(serde::Deserialize, serde::Serialize, Debug)]
-    struct ImuGyroscope {
-        x: f32,
-        y: f32,
-        z: f32,
+    pub struct ImuGyroscope {
+        pub x: f32,
+        pub y: f32,
+        pub z: f32,
         sequence: i32,
-        accuracy: ImuAccuracy,
-        timestamp: Timestamp,
-        device_timestamp: Timestamp,
+        pub accuracy: ImuAccuracy,
+        pub timestamp: Timestamp,
+        pub device_timestamp: Timestamp,
     }
 
     #[derive(serde::Deserialize, serde::Serialize, Debug)]
-    struct ImuMagneticField {
-        x: f32,
-        y: f32,
-        z: f32,
+    pub struct ImuMagneticField {
+        pub x: f32,
+        pub y: f32,
+        pub z: f32,
         sequence: i32,
-        accuracy: ImuAccuracy,
-        timestamp: Timestamp,
-        device_timestamp: Timestamp,
+        pub accuracy: ImuAccuracy,
+        pub timestamp: Timestamp,
+        pub device_timestamp: Timestamp,
     }
 
     #[derive(serde::Deserialize, serde::Serialize, Debug)]
-    struct ImuRotationVector {
-        i: f32,
-        j: f32,
-        k: f32,
-        real: f32,
-        rvec_accuracy: f32,
+    pub struct ImuRotationVector {
+        pub i: f32,
+        pub j: f32,
+        pub k: f32,
+        pub real: f32,
+        pub rvec_accuracy: f32,
         sequence: i32,
-        accuracy: ImuAccuracy,
-        timestamp: Timestamp,
-        device_timestamp: Timestamp,
+        pub accuracy: ImuAccuracy,
+        pub timestamp: Timestamp,
+        pub device_timestamp: Timestamp,
     }
 
     #[derive(serde_repr::Serialize_repr, serde_repr::Deserialize_repr, Debug)]
@@ -4035,10 +4035,10 @@ mod pipeline {
         High = 3,
     }
 
-    #[derive(serde::Deserialize, serde::Serialize, Debug, PartialEq, Default)]
+    #[derive(serde::Deserialize, serde::Serialize, Debug, PartialEq, Default, Clone, Copy)]
     pub struct Timestamp {
-        sec: i64,
-        nsec: i64,
+        pub(crate) sec: i64,
+        pub(crate) nsec: i64,
     }
 
     impl StaticIoDesc for In<ImuData> {
@@ -6261,6 +6261,10 @@ mod pipeline {
         const NODE_TYPE: NodeType = NodeType::SReceiver;
     }
 
+    // TODO:
+    // inputColor can also be passed in, so the whole rgbd pointcloud can be made on the device
+    // this might require a sync subnode tho
+    // - a test might have to be done
     impl StaticIoDesc for Numbered<CameraFrame, 21> {
         const NAME: &str = "inputDepth";
         const NODE_TYPE: NodeType = NodeType::SReceiver;
@@ -6344,8 +6348,8 @@ mod pipeline {
     impl NotMessageGroup for PointcloudData {}
 
     pub struct PointcloudFrame {
-        metadata: PointcloudData,
-        points: Vec<u8>,
+        pub metadata: PointcloudData,
+        pub points: Vec<u8>,
     }
 
     pub struct ImageManip;
@@ -8611,7 +8615,7 @@ mod calibration_handler {
 
     const EEPROM_TRANSLATION_UNIT: LengthUnit = LengthUnit::Centimeter;
 
-    fn imu_to_camera_extrinsics(eeprom: &EepromData, camera_id: CameraBoardSocket, use_spec_translation: bool, unit: LengthUnit) -> Option<nalgebra::Matrix4<f32>> {
+    pub fn imu_to_camera_extrinsics(eeprom: &EepromData, camera_id: CameraBoardSocket, use_spec_translation: bool, unit: LengthUnit) -> Option<nalgebra::Matrix4<f32>> {
         if matches!(camera_id, CameraBoardSocket::Auto) {
             return None;
         }
@@ -8629,7 +8633,7 @@ mod calibration_handler {
         }
     }
 
-    fn camera_to_imu_extrinsics(eeprom: &EepromData, camera_id: CameraBoardSocket, use_spec_translation: bool, unit: LengthUnit) -> Option<nalgebra::Matrix4<f32>> {
+    pub fn camera_to_imu_extrinsics(eeprom: &EepromData, camera_id: CameraBoardSocket, use_spec_translation: bool, unit: LengthUnit) -> Option<nalgebra::Matrix4<f32>> {
         let mut translation = self::imu_to_camera_extrinsics(eeprom, camera_id, use_spec_translation, unit)?;
         if !translation.try_inverse_mut() {
             return None
@@ -8655,7 +8659,7 @@ mod calibration_handler {
     }
 
     // translation from camera `from` to camera `to`
-    fn camera_extrinsics(eeprom: &EepromData, to: CameraBoardSocket, from: CameraBoardSocket, use_spec_translation: bool, unit: LengthUnit) -> Option<nalgebra::Matrix4<f32>> {
+    pub fn camera_extrinsics(eeprom: &EepromData, to: CameraBoardSocket, from: CameraBoardSocket, use_spec_translation: bool, unit: LengthUnit) -> Option<nalgebra::Matrix4<f32>> {
         let (origin_to, translate_to) = self::camera_extrinsics_to_origin(eeprom, to, use_spec_translation)?;
         let (origin_from, mut translate_from) = self::camera_extrinsics_to_origin(eeprom, from, use_spec_translation)?;
 
@@ -8728,4 +8732,325 @@ mod calibration_handler {
     }
 }
 mod ros2 {
+    struct Ros2Ctx<'a> {
+        base_frame: &'a str,
+        enable_rotation: bool,
+
+        linear_acceleration_covariance: f64,
+        angular_velocity_covariance: f64,
+        rotation_covariance: f64,
+
+        use_device_timestamp: bool,
+    }
+
+    use crate::rpc::EepromData;
+    // transforms
+    impl Ros2Ctx<'_> {
+        fn imu_transform(&self, eeprom: &EepromData, time: r2r::builtin_interfaces::msg::Time) -> r2r::geometry_msgs::msg::TransformStamped {
+            // TODO: frame names need to be updated
+            // - all of the stuff for frame naming conventions can be found in
+            // depthai_bridge/src/TFPublisher.cpp
+            let child_frame_id = format!("_imu_frame");
+
+            let mut transform = r2r::geometry_msgs::msg::Transform {
+                translation: r2r::geometry_msgs::msg::Vector3::default(),
+                rotation: r2r::geometry_msgs::msg::Quaternion {
+                    w: 0.5,
+                    x: -0.5,
+                    y: 0.5,
+                    z: -0.5,
+                },
+            };
+
+            let frame_id = if matches!(eeprom.imu_extrinsics.to_camera_socket, crate::rpc::CameraBoardSocket::Auto) {
+                self.base_frame.to_string()
+            } else {
+                let mtx = crate::calibration_handler::imu_to_camera_extrinsics(eeprom, eeprom.imu_extrinsics.to_camera_socket, false, crate::pipeline::LengthUnit::Meter).unwrap();
+
+                let translation = mtx.column(3);
+
+                transform.translation = r2r::geometry_msgs::msg::Vector3 {
+                    x: (translation[2] / 100.) as _,
+                    y: (translation[0] / -100.) as _,
+                    z: (translation[1] / -100.) as _,
+                };
+
+                format!("node_{:?}_camera_frame", eeprom.imu_extrinsics.to_camera_socket)
+            };
+
+            let header = r2r::std_msgs::msg::Header {
+                stamp: time,
+                frame_id,
+            };
+
+            r2r::geometry_msgs::msg::TransformStamped {
+                header,
+                child_frame_id,
+                transform,
+            }
+        }
+
+        fn camera_transforms(&self, eeprom: &EepromData, time: r2r::builtin_interfaces::msg::Time) -> impl Iterator<Item = r2r::geometry_msgs::msg::TransformStamped> {
+            use crate::rpc::CameraBoardSocket;
+            use crate::pipeline::LengthUnit;
+
+            // TODO: get actual frame names for transforms
+            eeprom.camera_data.iter().map(move |(cam, info)| {
+                let child_frame_id = format!("node_{:?}_camera_frame", cam);
+
+                let (frame_id, rotation, translation) = if !matches!(info.extrinsics.to_camera_socket, CameraBoardSocket::Auto) {
+                    let mtx = crate::calibration_handler::camera_extrinsics(eeprom, *cam, info.extrinsics.to_camera_socket, false, LengthUnit::Centimeter).unwrap();
+
+                    let quat = Self::quat_from_rotm(mtx.fixed_view::<3, 3>(0, 0));
+                    let translation = mtx.column(3);
+
+                    let translation = r2r::geometry_msgs::msg::Vector3 {
+                        x: (translation[2] / 100.) as _,
+                        y: (translation[0] / -100.) as _,
+                        z: (translation[1] / -100.) as _,
+                    };
+
+                    let rotation = r2r::geometry_msgs::msg::Quaternion {
+                        x: quat[0] as _,
+                        y: quat[1] as _,
+                        z: quat[2] as _,
+                        w: quat[3] as _,
+                    };
+
+                    (format!("node{:?}_camera_frame", cam), rotation, translation)
+                } else {
+                    let rotation = r2r::geometry_msgs::msg::Quaternion {
+                        x: 0.,
+                        y: 0.,
+                        z: 0.,
+                        w: 1.,
+                    };
+                    (self.base_frame.to_string(), rotation, r2r::geometry_msgs::msg::Vector3::default())
+                };
+
+                let transform = r2r::geometry_msgs::msg::Transform {
+                    translation,
+                    rotation,
+                };
+
+                let stamped = r2r::geometry_msgs::msg::TransformStamped {
+                    header:  r2r::std_msgs::msg::Header {
+                        stamp: time.clone(),
+                        frame_id,
+                    },
+                    child_frame_id: child_frame_id.clone(),
+                    transform,
+                };
+
+                let optical = r2r::geometry_msgs::msg::TransformStamped {
+                    header:  r2r::std_msgs::msg::Header {
+                        stamp: time.clone(),
+                        frame_id: child_frame_id,
+                    },
+                    child_frame_id: format!("optical_{:?}_camera_frame", cam),
+                    transform: r2r::geometry_msgs::msg::Transform {
+                        translation: r2r::geometry_msgs::msg::Vector3::default(),
+                        rotation: r2r::geometry_msgs::msg::Quaternion {
+                            x: -0.5,
+                            y: 0.5,
+                            z: -0.5,
+                            w: 0.5,
+                        }
+                    },
+                };
+                std::iter::once(stamped).chain(std::iter::once(optical))
+            }).flatten()
+        }
+
+        fn quat_from_rotm(mtx: nalgebra::MatrixView<'_, f32, Const<3>, Const<3>, Const<1>, Const<4>>) -> nalgebra::geometry::UnitQuaternion<f32> {
+            use nalgebra::geometry::{UnitQuaternion, Quaternion};
+            let extrinsic = UnitQuaternion::from_matrix(&mtx.into());
+            let flu = UnitQuaternion::new_normalize(Quaternion::new(0., 0., 0., 1.));
+            let rot_to_rdf = UnitQuaternion::new_normalize(Quaternion::new(-0.5, 0.5, -0.5, 0.5));
+            let rdf = flu * rot_to_rdf;
+
+            let rdf = rdf * extrinsic;
+            rdf * rot_to_rdf.inverse()
+        }
+    }
+
+    // imu
+    impl Ros2Ctx<'_> {
+        fn imu_msg(&self, data: &crate::pipeline::ImuData) -> impl Iterator<Item = r2r::sensor_msgs::msg::Imu> {
+            data.packets.iter().map(|pkt| {
+                let accel = &pkt.accelerometer;
+                let gyro = &pkt.gyroscope;
+
+                let linear_acceleration = r2r::geometry_msgs::msg::Vector3 {
+                    x: accel.x as _,
+                    y: accel.y as _,
+                    z: accel.z as _,
+                };
+
+                let lin_accel_cov = self.linear_acceleration_covariance;
+
+                let linear_acceleration_covariance = vec![
+                    lin_accel_cov, 0., 0., 
+                    0., lin_accel_cov, 0., 
+                    0., 0., lin_accel_cov,
+                ];
+
+                let angular_velocity = r2r::geometry_msgs::msg::Vector3 {
+                    x: gyro.x as _,
+                    y: gyro.y as _,
+                    z: gyro.z as _,
+                };
+
+                let ang_vel_cov = self.angular_velocity_covariance;
+
+                let angular_velocity_covariance = vec![
+                    ang_vel_cov, 0., 0., 
+                    0., ang_vel_cov, 0., 
+                    0., 0., ang_vel_cov,
+                ];
+
+                let (orientation, orientation_covariance) = if self.enable_rotation {
+                    let rot_cov = self.rotation_covariance;
+                    let rot = &pkt.rotation_vector;
+
+                    let rotation = r2r::geometry_msgs::msg::Quaternion {
+                        x: rot.i as _,
+                        y: rot.j as _,
+                        z: rot.k as _,
+                        w: rot.real as _,
+                    };
+                    let cov = vec![
+                        rot_cov, 0., 0., 
+                        0., rot_cov, 0., 
+                        0., 0., rot_cov,
+                    ];
+                    (rotation, cov)
+                } else {
+                    (r2r::geometry_msgs::msg::Quaternion {
+                        x: 0.,
+                        y: 0.,
+                        z: 0.,
+                        w: 1.,
+                    }, vec![-1., 0., 0., 0., 0., 0., 0., 0., 0.,])
+                };
+
+
+                let time = if self.use_device_timestamp {
+                    accel.timestamp
+                } else {
+                    accel.device_timestamp
+                };
+
+                let stamp = r2r::builtin_interfaces::msg::Time {
+                    sec: time.sec as _,
+                    nanosec: time.nsec as _,
+                };
+
+                r2r::sensor_msgs::msg::Imu {
+                    header: r2r::std_msgs::msg::Header {
+                        stamp,
+                        frame_id: Default::default()
+                    },
+                    orientation,
+                    orientation_covariance,
+                    angular_velocity,
+                    angular_velocity_covariance,
+                    linear_acceleration,
+                    linear_acceleration_covariance,
+                }
+            })
+        }
+    }
+
+    // pcl
+    impl Ros2Ctx<'_> {
+        fn pointcloud_msg(&self, pcl: &crate::pipeline::PointcloudFrame, is_color: bool) -> r2r::sensor_msgs::msg::PointCloud2 {
+
+            let time = if self.use_device_timestamp {
+                pcl.metadata.device_timestamp
+            } else {
+                pcl.metadata.timestamp
+            };
+
+            let stamp = r2r::builtin_interfaces::msg::Time {
+                sec: time.sec as _,
+                nanosec: time.nsec as _,
+            };
+
+            use r2r::sensor_msgs::msg::PointField;
+
+            let point_step = if is_color {
+                16
+            } else {
+                12
+            };
+
+            let fields = if is_color {
+                vec![
+                    PointField {
+                        name: "x".to_string(),
+                        offset: 0,
+                        datatype: PointField::FLOAT32 as u8,
+                        count: 1,
+                    },
+                    PointField {
+                        name: "y".to_string(),
+                        offset: 4,
+                        datatype: PointField::FLOAT32 as u8,
+                        count: 1,
+                    },
+                    PointField {
+                        name: "z".to_string(),
+                        offset: 8,
+                        datatype: PointField::FLOAT32 as u8,
+                        count: 1,
+                    },
+                    PointField {
+                        name: "rgb".to_string(),
+                        offset: 12,
+                        datatype: PointField::UINT32 as u8,
+                        count: 1,
+                    },
+                ]
+            } else {
+                vec![
+                    PointField {
+                        name: "x".to_string(),
+                        offset: 0,
+                        datatype: PointField::FLOAT32 as u8,
+                        count: 1,
+                    },
+                    PointField {
+                        name: "y".to_string(),
+                        offset: 4,
+                        datatype: PointField::FLOAT32 as u8,
+                        count: 1,
+                    },
+                    PointField {
+                        name: "z".to_string(),
+                        offset: 8,
+                        datatype: PointField::FLOAT32 as u8,
+                        count: 1,
+                    },
+                ]
+            };
+
+            r2r::sensor_msgs::msg::PointCloud2 {
+                header: r2r::std_msgs::msg::Header {
+                    stamp,
+                    frame_id: Default::default()
+                },
+                width: pcl.metadata.width,
+                height: pcl.metadata.height,
+                is_dense: !pcl.metadata.sparse,
+                fields,
+                point_step,
+                row_step: point_step*pcl.metadata.width,
+                data: (&pcl.points[..(pcl.metadata.width * pcl.metadata.height * point_step) as usize]).to_vec(),
+                is_bigendian: false,
+            }
+        }
+    }
+
+    use nalgebra::base::dimension::Const;
 }
