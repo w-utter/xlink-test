@@ -21,6 +21,7 @@ rmpv = "1.3"
 serde = { version = "1", features = ["derive"]}
 serde_bytes = "0.11"
 serde-rmpv = "0.0.1"
+#serde-rmpv = {path = "../serde-rmpv"}
 serde_repr = "0.1"
 
 rnop = {git = "https://github.com/w-utter/rnop", features = ["serde"]}
@@ -29,3 +30,7 @@ opencv = {git = "https://github.com/twistedfall/opencv-rust", features = ["clang
 
 r2r = {git = "https://github.com/ATIinc/r2r", branch = "kilted" }
 nalgebra = "0.34"
+
+pretty_assertions = "1.4"
+
+rayon = "1.12"

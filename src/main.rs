@@ -1,5 +1,6 @@
 use tokio::sync::mpsc;
 
+
 async fn unpack_tarball(bytes: &[u8]) -> std::io::Result<tokio_tar::Entries<std::io::Cursor<Vec<u8>>>> {
     let xc_buf = {
         let mut xc_buf = vec![];
@@ -20,7 +21,19 @@ async fn main() {
     let bootloader_firmware = include_bytes!("firmware/depthai-bootloader-fwp-0.0.28.tar.xz");
     let device_firmware = include_bytes!("firmware/depthai-device-fwp-747b3781a390caf3e0e2e78a77f201b0fd3fc22a.tar.xz");
     // TODO: properly decompress this from the device_firmware
-    let device_firmware_buf = include_bytes!("firmware/depthai-device-openvino-universal-747b3781a390caf3e0e2e78a77f201b0fd3fc22a.cmd");
+    // info on how to get this firmware can be found by looking at
+    // the DepthaiBootloaderDownloader.cmake file
+    // theres basically a url to download stuff at
+    // `https://artifacts.luxonis.com/artifactory/{build type}/{artifact prefix}/{commit}`
+    // eg.
+    //  - `{artifact prefix}` always seems to be `depthai-bootloader`
+    //  for the bootloader
+    //
+    //  and
+    //  `https://artifacts.luxonis.com/artifactory/{build type}/{artifact prefix}/{commit}`
+    //  - `{artifact prefix}` is always `depthai-device-side`
+    //
+    let device_firmware_buf = include_bytes!("firmware/depthai-device-openvino-universal-358472a96039cc24ae416b9612210f04544c1928.cmd");
 
     let mut bootloader_firmware_entries = unpack_tarball(bootloader_firmware).await.unwrap();
 
@@ -173,7 +186,7 @@ async fn main() {
 
         connection.create_stream("__log", 128).await.unwrap();
 
-        //TODO: might have to do smth for the timesync thread
+        //TODO: timesync
 
         connection.create_stream("__timesync", 128).await.unwrap();
 
@@ -209,7 +222,9 @@ async fn main() {
         
         let mut rpc = rpc::Rpc::new(&mut rpc_stream);
 
+
         let is_running = rpc.is_running().await;
+        println!("is running: {is_running:?}");
         //let resp = rpc.call("isRunning", [].into_iter()).await;
 
         /*
@@ -293,15 +308,15 @@ async fn main() {
         let eeprom_available = rpc.is_eeprom_available().await.unwrap();
         println!("eeprom available: {eeprom_available:?}");
 
-        let calibration = rpc.calibration().await.unwrap();
         println!("calibration: {calibration:?}");
 
         let calibration2 = rpc.calibration2().await.unwrap();
         println!("calibration2: {calibration2:?}");
         */
 
-        let features = rpc.connected_camera_features().await.unwrap();
-        println!("features: {features:?}");
+        //let features = rpc.connected_camera_features().await.unwrap();
+        //println!("features: {features:?}");
+        let eeprom_calibration = rpc.calibration().await.unwrap();
 
         use crate::rpc::{PipelineSchema, NodeConnectionSchema, NodeObjInfo, NodeIoInfo, GlobalProperties, NodeType, LogLevel};
 
@@ -381,7 +396,7 @@ async fn main() {
                 cam_l.initial_control.awb_lock_mode = false;
 
 
-                cam_l.initial_control.strobe_config.enable = false;
+                cam_l.initial_control.strobe_config.enable = 0;
                 // control_mode: 132, effect_mode: 60, frame_sync_mode: 25
                 // control_mode: 27, effect_mode: 146, frame_sync_mode: 35
                 cam_l.initial_control.control_mode = 27;
@@ -419,7 +434,7 @@ async fn main() {
                 cam_r.initial_control.ae_lock_mode = false;
                 cam_r.initial_control.awb_lock_mode = false;
 
-                cam_r.initial_control.strobe_config.enable = false;
+                cam_r.initial_control.strobe_config.enable = 0;
                 cam_r.initial_control.contrast = -127;
                 cam_r.initial_control.saturation = 2;
                 // low_power_frame_burst: 176, low_power_frame_discard: 132
@@ -687,8 +702,6 @@ async fn main() {
             });
             let color_cam = color.requested_camera_outputs().next().unwrap();
 
-            // TODO: go back to the schema for the imagealign example and compare
-
             let mut align = pipe.create_node::<pipeline::ImageAlign>();
 
             pipe.link(stereo.output().depth, align.input().input);
@@ -796,7 +809,7 @@ async fn main() {
                 cam_l.initial_control.awb_lock_mode = false;
 
 
-                cam_l.initial_control.strobe_config.enable = false;
+                cam_l.initial_control.strobe_config.enable = 0;
                 // control_mode: 132, effect_mode: 60, frame_sync_mode: 25
                 // control_mode: 27, effect_mode: 146, frame_sync_mode: 35
                 cam_l.initial_control.control_mode = 27;
@@ -834,7 +847,7 @@ async fn main() {
                 cam_r.initial_control.ae_lock_mode = false;
                 cam_r.initial_control.awb_lock_mode = false;
 
-                cam_r.initial_control.strobe_config.enable = false;
+                cam_r.initial_control.strobe_config.enable = 0;
                 cam_r.initial_control.contrast = -127;
                 cam_r.initial_control.saturation = 2;
                 // low_power_frame_burst: 176, low_power_frame_discard: 132
@@ -926,10 +939,11 @@ async fn main() {
             pipe.link(cam_right, stereo.input().right);
 
             let mut pointcloud = pipe.create_node::<pipeline::Pointcloud>();
-            pipe.link(stereo.output().depth, pointcloud.input().1);
+            //pipe.link(stereo.output().depth, pointcloud.input().depth);
 
+            todo!("review");
             let mut out = pipe.create_node::<pipeline::XLinkOut>();
-            let xlink_out = pipe.create_output_queue(pointcloud.output().0, &mut out);
+            let xlink_out = pipe.create_output_queue(pointcloud.output().pointcloud, &mut out);
 
             (pipe.build(DEVICE_ID), xlink_out)
         }
@@ -951,7 +965,7 @@ async fn main() {
                 cam_l.initial_control.awb_lock_mode = false;
 
 
-                cam_l.initial_control.strobe_config.enable = false;
+                cam_l.initial_control.strobe_config.enable = 0;
                 // control_mode: 132, effect_mode: 60, frame_sync_mode: 25
                 // control_mode: 27, effect_mode: 146, frame_sync_mode: 35
                 cam_l.initial_control.control_mode = 27;
@@ -989,7 +1003,7 @@ async fn main() {
                 cam_r.initial_control.ae_lock_mode = false;
                 cam_r.initial_control.awb_lock_mode = false;
 
-                cam_r.initial_control.strobe_config.enable = false;
+                cam_r.initial_control.strobe_config.enable = 0;
                 cam_r.initial_control.contrast = -127;
                 cam_r.initial_control.saturation = 2;
                 // low_power_frame_burst: 176, low_power_frame_discard: 132
@@ -1214,7 +1228,7 @@ async fn main() {
                 cam_l.initial_control.awb_lock_mode = false;
 
 
-                cam_l.initial_control.strobe_config.enable = false;
+                cam_l.initial_control.strobe_config.enable = 0;
                 // control_mode: 132, effect_mode: 60, frame_sync_mode: 25
                 // control_mode: 27, effect_mode: 146, frame_sync_mode: 35
                 cam_l.initial_control.control_mode = 27;
@@ -1252,7 +1266,7 @@ async fn main() {
                 cam_r.initial_control.ae_lock_mode = false;
                 cam_r.initial_control.awb_lock_mode = false;
 
-                cam_r.initial_control.strobe_config.enable = false;
+                cam_r.initial_control.strobe_config.enable = 0;
                 cam_r.initial_control.contrast = -127;
                 cam_r.initial_control.saturation = 2;
                 // low_power_frame_burst: 176, low_power_frame_discard: 132
@@ -1353,7 +1367,8 @@ async fn main() {
             pipe.link(color_cam.clone(), align.input().align_to);
 
             let mut pointcloud = pipe.create_node::<pipeline::Pointcloud>();
-            pipe.link(align.output().aligned, pointcloud.input().1);
+            todo!("review");
+            //pipe.link(align.output().aligned, pointcloud.input().depth);
 
             // STEREO INPUT END
 
@@ -1368,7 +1383,7 @@ async fn main() {
             let group = pipeline::MsgGroup::new()
                                     .with_msg(color_cam, "rgb")
                                     //.with_msg(imu.output(), "imu")
-                                    .with_msg(pointcloud.output().0, "pcl")
+                                    .with_msg(pointcloud.output().pointcloud, "pcl")
                                     ;
 
             let sync = pipe.create_sync_node(group);
@@ -1382,6 +1397,332 @@ async fn main() {
             let xlink_imu_out = pipe.create_output_queue(imu.output(), &mut imu_out);
 
             (pipe.build(DEVICE_ID), xlink_sync_out, xlink_imu_out)
+        }
+
+        fn rgb_pcl_pipeline() -> (rpc::PipelineSchema, pipeline::OutputQueue<pipeline::MessageGroup, pipeline::RnopDeserializer, pipeline::queue_state::Pending>) {
+            const CAMERA_SIZE: (u32, u32) = (640, 480);
+            const CAMERA_FPS: f32 = 30.;
+
+            let mut pipe = pipeline::Pipeline::new();
+
+            // COLOR INPUT START
+
+            let mut color = pipe.create_node::<pipeline::Camera>();
+
+            {
+                let props = color.properties_mut();
+
+                // to make it work ? 
+
+                props.initial_control.lens_pos_auto_infinity = 255;
+                props.initial_control.lens_pos_auto_macro = 255;
+
+                props.initial_control.exp_manual = crate::pipeline::ManualExposureParams {
+                    exposure_time_us: 4294967295,
+                    sensitivity_iso: 1,
+                    ..Default::default()
+                };
+                props.initial_control.ae_region.priority = 196916;
+
+                props.initial_control.af_region.priority = 200795;
+                props.initial_control.af_region.x = 38;
+
+                props.initial_control.control_mode = 108;
+                props.initial_control.effect_mode = 193;
+                props.initial_control.frame_sync_mode = -1;
+                
+                props.initial_control.strobe_config.enable = 13;
+                props.initial_control.strobe_timings.exposure_begin_offset_us= 200611;
+                props.initial_control.strobe_timings.duration_us= 272113;
+
+                /*
+                props.output_requests.get_mut(0).unwrap().fps = Capability::new_single(25.);
+                props.output_requests.get_mut(0).unwrap().size = Capability::new_single((1280, 960));
+                props.output_requests.get_mut(0).unwrap().ty = Some(FrameType::Nv12);
+                props.output_requests.get_mut(0).unwrap().enable_undistortion = Some(true);
+                */
+
+                // end
+
+
+                color.properties_mut().board_socket = crate::rpc::CameraBoardSocket::A;
+            }
+
+            color.request_output(pipeline::CameraCapability {
+                //size: pipeline::Capability::new_single((1280, 960)),
+                size: pipeline::Capability::new_single((640, 480)),
+                fps: pipeline::Capability::new_single(25.),
+                ty: Some(pipeline::FrameType::Rgb888i),
+                enable_undistortion: Some(true),
+                isp_output: false,
+                resize_mode: pipeline::FrameResize::Crop,
+            });
+            let color_cam = color.requested_camera_outputs().next().unwrap();
+
+            // COLOR INPUT END
+
+            // STEREO INPUT START
+
+            let mut camera_left = pipe.create_node::<pipeline::Camera>();
+            let cam_l = camera_left.properties_mut();
+            {
+                // TODO: figure out how exactly these regions are being changed
+                //      - they seem to differ every time its ran
+                //      - maybe from querying the device?
+                cam_l.initial_control.af_region.x = 17586;
+                cam_l.initial_control.af_region.priority = 17586;
+
+                cam_l.initial_control.ae_lock_mode = false;
+                cam_l.initial_control.awb_lock_mode = false;
+
+
+                cam_l.initial_control.strobe_config.enable = 0;
+                // control_mode: 132, effect_mode: 60, frame_sync_mode: 25
+                // control_mode: 27, effect_mode: 146, frame_sync_mode: 35
+                cam_l.initial_control.control_mode = 27;
+                cam_l.initial_control.effect_mode = 146;
+                cam_l.initial_control.frame_sync_mode = 35;
+                cam_l.initial_control.enable_hdr = false;
+
+
+
+                // stuff that made it work with the official
+
+                cam_l.initial_control.lens_pos_auto_infinity = 64;
+                cam_l.initial_control.lens_pos_auto_macro = 13;
+                cam_l.initial_control.exp_manual.exposure_time_us = 24259;
+                cam_l.initial_control.exp_manual.sensitivity_iso = 1553861856;
+                cam_l.initial_control.exp_manual.frame_duration_us = 24259;
+                cam_l.initial_control.ae_region = crate::pipeline::RegionParams {
+                    x: 3248,
+                    y: 23710,
+                    width: 24259,
+                    priority: 3,
+                    ..Default::default()
+                };
+
+                cam_l.initial_control.af_region = crate::pipeline::RegionParams {
+                    width: 25704,
+                    height: 114,
+                    ..Default::default()
+                };
+                cam_l.initial_control.control_mode = 0;
+                cam_l.initial_control.effect_mode = 0;
+                cam_l.initial_control.frame_sync_mode = -1;
+                cam_l.initial_control.ae_max_exposure_time_us = 96;
+                cam_l.initial_control.contrast = 96;
+                cam_l.initial_control.low_power_frame_burst = 112;
+                cam_l.initial_control.low_power_frame_discard = 195;
+
+                /*
+                c2a.output_requests.get_mut(0).unwrap().fps = Capability::new_single(25.);
+                c2a.output_requests.get_mut(0).unwrap().size = Capability::new_single((640, 400));
+                */
+
+                // end
+
+
+                cam_l.board_socket = crate::rpc::CameraBoardSocket::B;
+            }
+
+            camera_left.request_output(pipeline::CameraCapability {
+                size: pipeline::Capability::new_single((640, 400)),
+                fps: pipeline::Capability::new_single(25.),
+                ty: None,
+                enable_undistortion: None,
+                isp_output: false,
+                resize_mode: pipeline::FrameResize::Crop,
+            });
+
+            let cam_left = camera_left.requested_camera_outputs().next().unwrap();
+
+            let mut camera_right = pipe.create_node::<pipeline::Camera>();
+            let cam_r = camera_right.properties_mut();
+            {
+                cam_r.initial_control.ae_region.x = 48944;
+                cam_r.initial_control.ae_region.y = 31727;
+                cam_r.initial_control.ae_region.width = 24153;
+                cam_r.initial_control.ae_region.height = 0;
+                cam_r.initial_control.ae_region.priority = 3;
+
+                // x: 0, y: 0, width: 28518, height: 118, priority: 0
+                cam_r.initial_control.af_region.width = 28518;
+                cam_r.initial_control.af_region.height = 118;
+
+                cam_r.initial_control.ae_lock_mode = false;
+                cam_r.initial_control.awb_lock_mode = false;
+
+                cam_r.initial_control.strobe_config.enable = 0;
+                cam_r.initial_control.contrast = -127;
+                cam_r.initial_control.saturation = 2;
+                // low_power_frame_burst: 176, low_power_frame_discard: 132
+                cam_r.initial_control.low_power_frame_burst = 176;
+                cam_r.initial_control.low_power_frame_discard = 4;
+                cam_r.initial_control.enable_hdr = false;
+
+                // impl to make it work ? 
+
+
+                cam_r.initial_control.lens_pos_auto_infinity = 104;
+                cam_r.initial_control.lens_pos_auto_macro = 100;
+                cam_r.initial_control.exp_manual.sensitivity_iso = 737;
+                // x: 46000, y: 23231, width: 24259, height: 0, priority: 2625649440
+                cam_r.initial_control.ae_region.x = 46000;
+                cam_r.initial_control.ae_region.y = 23231;
+                cam_r.initial_control.ae_region.width = 24259;
+                cam_r.initial_control.ae_region.priority = 2625649440;
+                //x: 30810, y: 0, width: 0, height: 0, priority: 0
+                cam_r.initial_control.af_region = crate::pipeline::RegionParams {
+                    x: 30810,
+                    ..Default::default()
+                };
+                cam_r.initial_control.frame_sync_mode = -1;
+                cam_r.initial_control.strobe_config.active_level = 112;
+                cam_r.initial_control.strobe_config.gpio_number = -95;
+
+                // exposure_begin_offset_us: 24259, exposure_end_offset_us: 3, duration_us: 0
+                cam_r.initial_control.strobe_timings.exposure_begin_offset_us = 24259;
+                cam_r.initial_control.strobe_timings.exposure_end_offset_us = 3;
+
+                cam_r.initial_control.ae_max_exposure_time_us = 7761766;
+
+                cam_r.initial_control.brightness = 0;
+                cam_r.initial_control.contrast = 0;
+                cam_r.initial_control.saturation = 0;
+
+                cam_r.initial_control.low_power_frame_burst = 0;
+                cam_r.initial_control.low_power_frame_discard = 161;
+
+                /*
+                cam_r.output_requests.get_mut(0).unwrap().fps = Capability::new_single(25.);
+                cam_r.output_requests.get_mut(0).unwrap().size = Capability::new_single((640, 400));
+                */
+
+
+                // end
+
+
+                cam_r.board_socket = crate::rpc::CameraBoardSocket::C;
+            }
+
+            camera_right.request_output(pipeline::CameraCapability {
+                size: pipeline::Capability::new_single((640, 400)),
+                fps: pipeline::Capability::new_single(25.),
+                ty: None,
+                enable_undistortion: None,
+                isp_output: false,
+                resize_mode: pipeline::FrameResize::Crop,
+            });
+
+            let cam_right = camera_right.requested_camera_outputs().next().unwrap();
+
+
+            let mut stereo = pipe.create_node::<pipeline::StereoDepth>();
+
+            let props = stereo.properties_mut();
+
+            {
+                use crate::pipeline::Filter;
+                props.initial_config.algorithm_control.enable_extended = false;
+                props.initial_config.algorithm_control.enable_left_right_check = true;
+                props.initial_config.algorithm_control.enable_software_left_right_check = false;
+                props.initial_config.algorithm_control.enable_subpixel = false;
+                props.initial_config.algorithm_control.subpixel_fractional_bits = 3;
+
+                props.initial_config.algorithm_control.depth_align = pipeline::DepthAlign::Center;
+
+
+                props.initial_config.post_processing.spatial_filter.enable = false;
+                props.initial_config.post_processing.temporal_filter.enable = false;
+                props.initial_config.post_processing.speckle_filter.enable = false;
+                props.initial_config.post_processing.hole_filling.enable = true;
+                props.initial_config.post_processing.hole_filling.invalidate_disparities = true;
+                props.initial_config.post_processing.adaptive_median_filter.enable = true;
+                props.initial_config.census_transform.enable_mean_mode = true;
+
+                props.initial_config.cost_matching.enable_companding = false;
+                props.initial_config.cost_matching.enable_software_confidence_thresholding = false;
+
+                props.initial_config.cost_aggregation.p1_config.enable_adaptive = true;
+                props.initial_config.cost_aggregation.p2_config.enable_adaptive = true;
+
+                props.initial_config.confidence_metrics.flatness_override = false;
+
+                props.enable_rectification = true;
+                props.enable_runtime_stereo_mode_switch = false;
+                props.keep_aspect_ratio = true;
+                props.focal_length_from_calibration = true;
+                props.enable_frame_sync = true;
+
+                props.initial_config.post_processing.filtering_order = [Filter::Decimation, Filter::Median, Filter::Speckle, Filter::Spatial, Filter::Temporal];
+                props.initial_config.post_processing.median = pipeline::MedianFilter::Kernel7x7;
+                props.initial_config.post_processing.spatial_filter.enable = true;
+                props.initial_config.post_processing.spatial_filter.hole_filling_radius = 1;
+                props.initial_config.post_processing.temporal_filter.enable = true;
+                props.initial_config.post_processing.temporal_filter.alpha = 0.5;
+                props.initial_config.post_processing.threshold_filter.max_range = 15000;
+                props.initial_config.post_processing.speckle_filter.enable = true;
+                props.initial_config.post_processing.speckle_filter.range = 200;
+                props.initial_config.post_processing.decimation_filter.decimation_factor = 2;
+                props.initial_config.post_processing.hole_filling.high_confidence_threshold = 100;
+                props.initial_config.post_processing.hole_filling.fill_confidence_threshold = 210;
+                props.initial_config.post_processing.hole_filling.min_valid_disparity = 3;
+
+                props.initial_config.cost_matching.confidence_threshold = 15;
+
+                props.initial_config.cost_aggregation.p1_config.default_value = 45;
+                props.initial_config.cost_aggregation.p1_config.edge_value = 40;
+                props.initial_config.cost_aggregation.p1_config.smooth_value = 49;
+
+                props.initial_config.cost_aggregation.p2_config.default_value = 95;
+                props.initial_config.cost_aggregation.p2_config.edge_value = 90;
+                props.initial_config.cost_aggregation.p2_config.smooth_value = 99;
+
+                props.initial_config.confidence_metrics.motion_vector_confidence_weight = 10;
+                props.initial_config.confidence_metrics.flatness_confidence_weight = 2;
+                props.initial_config.confidence_metrics.flatness_confidence_threshold = 5;
+
+                props.post_processing_shaves = 3;
+                props.post_processing_memory_slices = 3;
+
+                // stuff to match the one that works
+
+                props.initial_config.algorithm_control = Default::default();
+                props.initial_config.algorithm_control.depth_align = pipeline::DepthAlign::RectifiedRight;
+                props.initial_config.algorithm_control.enable_extended = true;
+                props.initial_config.post_processing = Default::default();
+                props.initial_config.cost_matching = Default::default();
+                props.initial_config.cost_aggregation = Default::default();
+                props.initial_config.confidence_metrics = Default::default();
+                props.post_processing_shaves = -1;
+                props.post_processing_memory_slices = -1;
+            }
+
+            pipe.link(cam_left, stereo.input().left);
+            pipe.link(cam_right, stereo.input().right);
+
+            let mut align = pipe.create_node::<pipeline::ImageAlign>();
+            // STEREO INPUT END
+
+            pipe.link(stereo.output().depth, align.input().input);
+            pipe.link(color_cam.clone(), align.input().align_to);
+
+            let mut pointcloud = pipe.create_node::<pipeline::Pointcloud<crate::pipeline::pointcloud_type::WithColor>>();
+            /*
+            let mut pointcloud = pipe.create_node::<pipeline::Pointcloud>();
+            pipe.link(align.output().aligned, pointcloud.input().depth);
+            */
+
+            pipe.link(align.output().aligned, pointcloud.depth_input());
+            pipe.link(color_cam, pointcloud.color_input());
+
+            //pipe.link(pointcloud.sync_output(), pointcloud.input().sync);
+
+            let mut out = pipe.create_node::<pipeline::XLinkOut>();
+            //let xlink_out = pipe.create_output_queue(pointcloud.output().pointcloud, &mut out);
+            let xlink_out = pipe.create_output_queue(pointcloud.sync_output(), &mut out);
+
+            (pipe.build(DEVICE_ID), xlink_out)
         }
 
         fn debug_pipeline() -> (rpc::PipelineSchema, pipeline::OutputQueue<pipeline::PipelineEvent, pipeline::RnopDeserializer, pipeline::queue_state::Pending>) {
@@ -1399,8 +1740,8 @@ async fn main() {
             (pipe.build(DEVICE_ID), xlink_out)
         }
 
-        let r = rpc.set_log_level(LogLevel::Off).await;
-        println!("log level {r:?}");
+        let r = rpc.set_log_level(LogLevel::Trace).await;
+        //println!("log level {r:?}");
 
         //let (schema, out) = stereo_pipeline();
         //let (schema, out1, out2) = camera_pipeline_dynamic();
@@ -1411,25 +1752,31 @@ async fn main() {
         //let (schema, out, /*debug*/) = pcl_rgb_imu_pipeline();
         //let (schema, out) = encoding_pipeline();
         //let (schema, out) = debug_pipeline();
-        let (schema, group, imu) = pcl_rgb_imu_pipeline();
+        //let (schema, group, imu) = pcl_rgb_imu_pipeline();
+        // 
+        // camera data changed?
+        //let (schema, pcl, other) = rgbd_pipeline();
+        let (schema, pcl) = rgb_pcl_pipeline();
 
         //connection.create_stream("__x_0_out", bootloader::MAX_PACKET_SIZE).await.unwrap();
 
 
         let ret = rpc.set_pipeline_schema(schema).await;
-        println!("{ret:?}");
+        println!("set schema: {ret:?}");
 
         let ret = rpc.wait_for_device_ready().await;
-        println!("{ret:?}");
+        println!("waiting: {ret:?}");
 
         let ret = rpc.build_pipeline().await;
-        println!("{ret:?}");
+        println!("building: {ret:?}");
 
         let ret = rpc.start_pipeline().await;
-        println!("{ret:?}");
+        println!("starting: {ret:?}");
 
-        let mut group = connection.wait_for_output_queue(group).await;
-        let mut imu = connection.wait_for_output_queue(imu).await;
+        let mut pcl = connection.wait_for_output_queue(pcl).await;
+        //let mut other = connection.wait_for_output_queue(other).await;
+        //let mut group = connection.wait_for_output_queue(group).await;
+        //let mut imu = connection.wait_for_output_queue(imu).await;
         /*
         let mut depth_queue = connection.wait_for_output_queue(depth).await;
         let mut color_queue = connection.wait_for_output_queue(color).await;
@@ -1458,6 +1805,36 @@ async fn main() {
 
         let mut max_disparity = 0.;
 
+        let mut color = None;
+        let mut depth = None;
+
+        let ros2_ctx = crate::ros2::Ros2Ctx::new("map");
+
+
+        let ctx = r2r::Context::create().unwrap();
+        let mut node = r2r::Node::create(ctx, "depthai_node", "").unwrap();
+
+
+        use r2r::qos::QosProfile;
+
+        let tf_pub = node.create_publisher::<r2r::tf2_msgs::msg::TFMessage>("/tf", QosProfile {
+            depth: 100,
+            ..QosProfile::default()
+        }).unwrap();
+
+        let pc_pub = node.create_publisher::<r2r::sensor_msgs::msg::PointCloud2>("depthai/cloud", QosProfile {
+            depth: 10,
+            ..QosProfile::default()
+        }).unwrap();
+
+        tokio::task::spawn_blocking(move || {
+            loop {
+                node.spin_once(std::time::Duration::from_millis(100));
+            }
+        });
+
+        let mut tf_timer = tokio::time::interval(std::time::Duration::from_millis(2500));
+
         loop {
             tokio::select! {
                 msgs = logger.read() => {
@@ -1467,6 +1844,65 @@ async fn main() {
                         }
                     }
                 }
+                res = pcl.read() => {
+                    use pipeline::GroupedMessage;
+                    match res.unwrap() {
+                        GroupedMessage::Frame(f) => {
+                            use pipeline::FrameType;
+                            match f.metadata().fb.ty {
+                                FrameType::Raw16 => depth = Some(f),
+                                FrameType::Rgb888i => color = Some(f),
+                                _ => (),
+                            }
+                        }
+                        GroupedMessage::MessageGroup(_) => {
+                            if depth.is_none() {
+                                continue;
+                            }
+
+                            let (Some(depth), color) = (core::mem::take(&mut depth), core::mem::take(&mut color)) else {
+                                unreachable!();
+                            };
+
+                            let ctx = ros2_ctx.clone();
+                            let pc_pub = pc_pub.clone();
+                            tokio::task::spawn_blocking(move || {
+                                let color = color;
+                                let depth = depth;
+
+                                let pc = ctx.pointcloud_from_images(depth, color).unwrap();
+
+                                pc_pub.publish(&pc);
+                                println!("{:?}", pc.data.len());
+                            });
+                        }
+                        _ => continue,
+                    };
+                }
+                _ = tf_timer.tick() => {
+
+                    let time = std::time::SystemTime::now().duration_since(std::time::SystemTime::UNIX_EPOCH).unwrap_or(std::time::Duration::ZERO);
+
+                    let stamp = r2r::builtin_interfaces::msg::Time {
+                        sec: time.as_secs() as _,
+                        nanosec: time.subsec_nanos(),
+                    };
+
+                    let transforms = ros2_ctx.camera_transforms(&eeprom_calibration, stamp.clone()).chain(std::iter::once(ros2_ctx.imu_transform(&eeprom_calibration, stamp))).collect::<Vec<_>>();
+
+                    let msg = r2r::tf2_msgs::msg::TFMessage {
+                        transforms,
+                    };
+
+                    tf_pub.publish(&msg);
+                }
+                /*
+                res = other.read() => {
+                    let res = res.unwrap();
+                    println!("{res:?}");
+                }
+                */
+                /*
                 res = group.read() => {
                     let res = res.unwrap();
                     println!("{res:?}");
@@ -1475,6 +1911,7 @@ async fn main() {
                     let res = res.unwrap();
                     println!("{res:?}");
                 }
+                */
                 /*
                 res = depth_queue.read() => {
                     let res = res.unwrap();
@@ -1813,9 +2250,6 @@ impl core::fmt::Debug for StreamName {
     }
 }
 
-
-// TODO: move io handling into seperate task,
-// change some stuff around to work with it in existing fns
 
 #[derive(Debug)]
 struct Connection {
@@ -2211,7 +2645,6 @@ struct Event<T> {
     data: T,
 }
 
-//TODO: make this more sealed (eg. supertrait w these)
 impl <T: bytemuck::Pod + bytemuck::Zeroable> Event<T> {
     fn new(data: T, name: &[u8], ty: u32, stream_id: u32, flags: u32) -> Self {
         let header = {
@@ -2954,6 +3387,7 @@ fn chunks() {
 }
 
 mod pipeline {
+    use pretty_assertions::assert_eq;
     use std::collections::HashMap;
     use crate::rpc::{LogLevel, NodeType};
 
@@ -2974,7 +3408,7 @@ mod pipeline {
     }
     */
 
-    fn register_node<'a, N: Node>(n: &'a NodeT<N>, map: &mut HashMap<u32, InternalNodeInfo<'a>>, io_idx: &mut u32) {
+    fn register_node<'a, N: Node>(n: &'a NodeT<N>, map: &mut BTreeMap<u32, InternalNodeInfo<'a>>, io_idx: &mut u32) {
         let mut w = vec![];
 
         n.properties.serialize(&mut w).unwrap();
@@ -2990,6 +3424,7 @@ mod pipeline {
             properties: w,
             log_level: n.log_level,
             io_info: io_info.inner,
+            parent_id: None,
         };
 
         map.insert(n.id, info);
@@ -3001,6 +3436,7 @@ mod pipeline {
         alias: Option<&'a str>,
         properties: Vec<u8>,
         log_level: LogLevel,
+        parent_id: Option<u32>,
         io_info: HashMap<(Option<&'a str>, &'a str), InternalIoInfo<'a>>
     }
 
@@ -3083,16 +3519,25 @@ mod pipeline {
     impl <T: serde::Serialize, S: Serializer> Serialize<S> for T {}
     impl <T: serde::de::DeserializeOwned, D: Deserializer> Deserialize<D> for T {}
 
+    trait Subnode<T: ?Sized>: Sized {
+        fn create_subnode(current_id: &mut u32) -> Self;
+    }
+
+    impl <T> Subnode<T> for () {
+        fn create_subnode(_: &mut u32) -> Self {
+        }
+    }
+
     pub trait Node {
         type Input: IoRegister + Inputs /*+ Default*/;
         type Output: IoRegister + Outputs + Default;
+        type Subnode: SubnodeRegister + Subnode<Self>;
 
         type Properties: Default + Serialize<RnopSerializer>;
         const NAME: &str;
         const ALIAS: Option<&str> = None;
+        const REGISTER_SELF: bool = true;
     }
-
-    //TODO: having a generic way to have &mut refs to nodes with and without debug
 
     pub struct Debug<T> {
         inner: T,
@@ -3169,6 +3614,10 @@ mod pipeline {
         type Input = T::Input;
         type Output = (PipelineEventOutput, T::Output);
         type Properties = T::Properties;
+        // FIXME: this should inherit the subnode from T
+        // but that creates a whole lot more complexity with
+        // how the subnode is bound to the parent
+        type Subnode = ();
         const NAME: &str = T::NAME;
         const ALIAS: Option<&str> = T::ALIAS;
     }
@@ -3309,7 +3758,7 @@ mod pipeline {
         const DEFAULT_QUEUE_SIZE: Option<i32> = Some(3);
     }
 
-    #[derive(serde::Serialize, serde::Deserialize, Debug)]
+    #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
     pub struct XLinkOutProperties {
         pub max_fps_limit: f32,
         pub(crate) stream_name: String,
@@ -3398,6 +3847,7 @@ mod pipeline {
         type Input = Input<Any<XLI>, AnySerializer>;
         type Output = Empty;
         type Properties = XLinkOutProperties;
+        type Subnode = ();
         const NAME: &str = "XLinkOut";
     }
 
@@ -3568,8 +4018,6 @@ mod pipeline {
     impl <D: Deserializer> Simplify<D, PointcloudData> for (PointcloudData, PointcloudFrame) {
         type Out = PointcloudFrame;
         fn simplify(this: PointcloudData, bytes: Vec<u8>) -> Self::Out {
-            // TODO: need to convert them to points here.
-            // or... could just keep them as bytes then send them back over ros...?
             PointcloudFrame {
                 metadata: this,
                 points: bytes,
@@ -3801,12 +4249,20 @@ mod pipeline {
         const NAME: &str = T::NAME;
         const GROUP: Option<&str> = T::GROUP;
         const NODE_TYPE: NodeType = T::NODE_TYPE;
+
+        const DEFAULT_WAIT_FOR_MESSAGE: bool = T::DEFAULT_WAIT_FOR_MESSAGE;
+        const DEFAULT_BLOCKING: bool = T::DEFAULT_BLOCKING;
+        const DEFAULT_QUEUE_SIZE: Option<i32> = T::DEFAULT_QUEUE_SIZE;
     }
 
     impl <T: StaticIoDesc + IoSerializeable<S>, S: Serializer> StaticIoDesc for Input<T, S> where T: Serialize<S> {
         const NAME: &str = T::NAME;
         const GROUP: Option<&str> = T::GROUP;
         const NODE_TYPE: NodeType = T::NODE_TYPE;
+
+        const DEFAULT_WAIT_FOR_MESSAGE: bool = T::DEFAULT_WAIT_FOR_MESSAGE;
+        const DEFAULT_BLOCKING: bool = T::DEFAULT_BLOCKING;
+        const DEFAULT_QUEUE_SIZE: Option<i32> = T::DEFAULT_QUEUE_SIZE;
     }
 
     impl <T: IoDesc> IoDesc for Any<T> {
@@ -3819,6 +4275,11 @@ mod pipeline {
         fn node_type(this: &Self::InfoStorage) -> NodeType {
             T::node_type(this)
         }
+
+        const DEFAULT_WAIT_FOR_MESSAGE: bool = T::DEFAULT_WAIT_FOR_MESSAGE;
+        const DEFAULT_BLOCKING: bool = T::DEFAULT_BLOCKING;
+        const DEFAULT_QUEUE_SIZE: Option<i32> = T::DEFAULT_QUEUE_SIZE;
+
 
         type InfoStorage = T::InfoStorage;
     }
@@ -3845,6 +4306,7 @@ mod pipeline {
         type Input = Empty;
         type Output = Output<SystemInfo, RnopDeserializer>;
         type Properties = SystemLoggerProperties;
+        type Subnode = ();
         const NAME: &str = "SystemLogger";
     }
 
@@ -4055,16 +4517,16 @@ mod pipeline {
         type Input = Input<In<ImuData>, RnopSerializer>;
         type Output = Output<Out<ImuData>, RnopDeserializer>;
         type Properties = ImuProperties;
+        type Subnode = ();
         const NAME: &str = "IMU";
     }
 
     pub struct Camera;
 
-    // TODO: this also has support for dynamic outputs,
-    // - create hashmap impl for (String, DynamicOutput/DynamicInput)
     impl Node for Camera {
         type Input = (Input<CameraInputControl, RnopSerializer>, Input<In<CameraFrame>, RnopSerializer>);
         type Output = (Output<Out<CameraFrame>, RnopDeserializer>, Vec<Output<Dynamic<CameraFrame>, RnopDeserializer>>);
+        type Subnode = ();
         type Properties = CameraProperties;
         const NAME: &str = "Camera";
     }
@@ -4126,7 +4588,7 @@ mod pipeline {
 
     pub struct Frame {
         metadata: CameraFrame,
-        bytes: Vec<u8>,
+        pub(crate) bytes: Vec<u8>,
     }
 
     // validates the lifetime of the mat,
@@ -4187,6 +4649,10 @@ mod pipeline {
                 inner,
                 _pd: core::marker::PhantomData,
             }
+        }
+
+        pub fn metadata(&self) -> &CameraFrame {
+            &self.metadata
         }
     }
 
@@ -4252,7 +4718,7 @@ mod pipeline {
         lens_position: u8,
         lens_position_raw: f32,
         pub lens_pos_auto_infinity: u8,
-        lens_pos_auto_macro: u8,
+        pub lens_pos_auto_macro: u8,
         pub exp_manual: ManualExposureParams,
         pub ae_region: RegionParams,
         pub af_region: RegionParams,
@@ -4271,7 +4737,7 @@ mod pipeline {
         //pub effect_mode: EffectMode,
         pub effect_mode: u8,
         //pub frame_sync_mode: FrameSyncMode,
-        pub frame_sync_mode: u8,
+        pub frame_sync_mode: i8,
         pub strobe_config: StrobeConfig,
         pub strobe_timings: StrobeTimings,
         pub ae_max_exposure_time_us: u32,
@@ -4406,8 +4872,9 @@ mod pipeline {
     }
 
     #[derive(serde_repr::Serialize_repr, serde_repr::Deserialize_repr, Debug, Default, PartialEq)]
-    #[repr(u8)]
+    #[repr(i8)]
     enum FrameSyncMode {
+        Auto = -1,
         #[default]
         Off = 0,
         Output = 1,
@@ -4416,7 +4883,7 @@ mod pipeline {
 
     #[derive(serde::Serialize, serde::Deserialize, Debug, Default, PartialEq)]
     pub struct StrobeConfig {
-        pub enable: bool,
+        pub enable: u8,
         pub active_level: u8,
         pub gpio_number: i8
     }
@@ -4450,15 +4917,15 @@ mod pipeline {
 
     #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
     pub struct CameraFrame {
-        timestamp: Timestamp,
-        device_timestamp: Timestamp,
+        pub timestamp: Timestamp,
+        pub device_timestamp: Timestamp,
         sequence: i32,
-        fb: CameraSpecs,
-        source_fb: CameraSpecs,
-        settings: CameraSettings,
-        category: u32,
-        instance: u32,
-        transformation: ImageTransformation,
+        pub fb: CameraSpecs,
+        pub source_fb: CameraSpecs,
+        pub settings: CameraSettings,
+        pub category: u32,
+        pub instance: u32,
+        pub transformation: ImageTransformation,
     }
 
     impl NotAny for CameraFrame {}
@@ -4466,22 +4933,37 @@ mod pipeline {
 
     #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
     pub struct ImageTransformation {
-        transformation_mtx: [[f32; 3]; 3],
-        transformation_mtx_inv: [[f32; 3]; 3],
-        source_intrinsic_mtx: [[f32; 3]; 3],
-        source_intrinsic_mtx_inv: [[f32; 3]; 3],
-        distortion_model: crate::rpc::CameraModel,
-        distortion_coefficients: Vec<f32>,
-        src_width: u32,
-        src_height: u32,
-        width: u32,
-        height: u32,
-        src_crops: Vec<RotatedRect>,
+        pub extrinsics: crate::rpc::Extrinsics,
+        pub transformation_mtx: [[f32; 3]; 3],
+        pub transformation_mtx_inv: [[f32; 3]; 3],
+        pub source_intrinsic_mtx: [[f32; 3]; 3],
+        pub source_intrinsic_mtx_inv: [[f32; 3]; 3],
+        pub distortion_model: crate::rpc::CameraModel,
+        pub distortion_coefficients: Vec<f32>,
+        pub src_width: u32,
+        pub src_height: u32,
+        pub width: u32,
+        pub height: u32,
+        pub src_crops: Vec<RotatedRect>,
         /*
         src_crop: RotatedRect,
         dst_crop: RotatedRect,
         crops_valid: bool,
         */
+    }
+
+    impl ImageTransformation {
+        pub fn intrinsic_matrix(&self) -> nalgebra::Matrix3<f32> {
+            let transform = nalgebra::Matrix3::from(self.transformation_mtx);
+            let intrinsic = nalgebra::Matrix3::from(self.source_intrinsic_mtx); 
+            transform * intrinsic
+        }
+
+        pub fn intrinsic_matrix_inv(&self) -> nalgebra::Matrix3<f32> {
+            let transform = nalgebra::Matrix3::from(self.transformation_mtx_inv);
+            let intrinsic = nalgebra::Matrix3::from(self.source_intrinsic_mtx_inv); 
+            intrinsic * transform
+        }
     }
 
     #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
@@ -4510,15 +4992,15 @@ mod pipeline {
 
     #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
     pub struct CameraSpecs {
-        ty: FrameType,
-        width: u32,
-        height: u32,
-        stride: u32,
-        bytes_pp: u32,
+        pub ty: FrameType,
+        pub width: u32,
+        pub height: u32,
+        pub stride: u32,
+        pub bytes_pp: u32,
         // offsets into planes
-        p1_offset: u32,
-        p2_offset: u32,
-        p3_offset: u32,
+        pub p1_offset: u32,
+        pub p2_offset: u32,
+        pub p3_offset: u32,
     }
 
     #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
@@ -4673,12 +5155,13 @@ mod pipeline {
     }
 
     use std::collections::HashSet;
+    use std::collections::BTreeMap;
 
     #[derive(Debug)]
     pub struct Pipeline<'a> {
         current_node_id: u32,
         pub(crate) connections: HashSet<NodeConnection<'a>>,
-        pub(crate) nodes: HashMap<u32, InternalNodeInfo<'a>>,
+        pub(crate) nodes: BTreeMap<u32, InternalNodeInfo<'a>>,
         current_io_id: u32,
         current_xlink_out_id: u32,
         pub properties: crate::rpc::GlobalProperties,
@@ -4695,9 +5178,42 @@ mod pipeline {
     }
 
     trait NodeRegister {
-        fn register<'a>(&'a self, map: &mut HashMap<u32, InternalNodeInfo<'a>>, io_idx: &mut u32);
+        fn register<'a>(&'a self, map: &mut BTreeMap<u32, InternalNodeInfo<'a>>, io_idx: &mut u32);
     }
 
+    trait SubnodeRegister {
+        fn register<'a>(&'a self, map: &mut BTreeMap<u32, InternalNodeInfo<'a>>, io_idx: &mut u32, parent_node_id: u32);
+    }
+
+    impl <T: Node> SubnodeRegister for NodeT<T> {
+        fn register<'a>(&'a self, map: &mut BTreeMap<u32, InternalNodeInfo<'a>>, io_idx: &mut u32, parent_node_id: u32) {
+            let mut w = vec![];
+
+            self.properties.serialize(&mut w).unwrap();
+
+            let mut io_info = IoInfo::new(io_idx);
+
+            self.input.register(&mut io_info);
+            self.output.register(&mut io_info);
+
+            let info = InternalNodeInfo {
+                name: T::NAME,
+                alias: T::ALIAS,
+                properties: w,
+                log_level: self.log_level,
+                io_info: io_info.inner,
+                parent_id: Some(parent_node_id),
+            };
+
+            map.insert(self.id, info);
+        }
+    }
+
+    impl SubnodeRegister for () {
+        fn register<'a>(&'a self, map: &mut BTreeMap<u32, InternalNodeInfo<'a>>, io_idx: &mut u32, parent_node_id: u32) {
+        }
+    }
+    
     trait LinkRegister<'a> {
         fn register(self, map: &mut HashSet<NodeConnection<'a>>);
     }
@@ -4742,13 +5258,16 @@ mod pipeline {
     */
 
     impl <N: Node> NodeRegister for NodeT<N> {
-        fn register<'a>(&'a self, map: &mut HashMap<u32, InternalNodeInfo<'a>>, io_idx: &mut u32) {
-            register_node(self, map, io_idx)
+        fn register<'a>(&'a self, map: &mut BTreeMap<u32, InternalNodeInfo<'a>>, io_idx: &mut u32) {
+            if N::REGISTER_SELF {
+                register_node(self, map, io_idx);
+            }
+            SubnodeRegister::register(&self.subnode, map, io_idx, self.id);
         }
     }
 
     impl <'b, N: Node, T: IoDesc + IoDeserializeable<D>, D: Deserializer> NodeRegister for Grouped<'_, OutputRef<'b, N, T, D>> {
-        fn register<'a>(&'a self, map: &mut HashMap<u32, InternalNodeInfo<'a>>, io_idx: &mut u32) {
+        fn register<'a>(&'a self, map: &mut BTreeMap<u32, InternalNodeInfo<'a>>, io_idx: &mut u32) {
             let n = self.inner.node;
 
             let mut w = vec![];
@@ -4767,6 +5286,7 @@ mod pipeline {
                 properties: w,
                 log_level: n.log_level,
                 io_info: io_info.inner,
+                parent_id: None,
             };
 
             map.insert(n.id, info);
@@ -4778,7 +5298,7 @@ mod pipeline {
     }
 
     impl <G1: NodeRegister, G2: NodeRegister> NodeRegister for (G1, G2) {
-        fn register<'a>(&'a self, map: &mut HashMap<u32, InternalNodeInfo<'a>>, io_idx: &mut u32) {
+        fn register<'a>(&'a self, map: &mut BTreeMap<u32, InternalNodeInfo<'a>>, io_idx: &mut u32) {
             self.0.register(map, io_idx);
             self.1.register(map, io_idx);
         }
@@ -4789,14 +5309,14 @@ mod pipeline {
             Pipeline {
                 current_node_id: 0,
                 connections: HashSet::new(),
-                nodes: HashMap::new(),
+                nodes: BTreeMap::new(),
                 current_io_id: 0,
                 current_xlink_out_id: 0,
                 properties: Default::default(),
             }
         }
 
-        pub fn create_node<T: Node>(&mut self) -> NodeT<T> where <T as Node>::Input: Default {
+        pub fn create_node<T: Node>(&mut self) -> NodeT<T> where <T as Node>::Input: Default{
             self.create_node_with_properties(Default::default())
         }
 
@@ -4805,11 +5325,11 @@ mod pipeline {
             self.current_node_id += 1;
             NodeT {
                 log_level: LogLevel::Off,
-                //parent_id: 1,
                 properties,
                 _m: core::marker::PhantomData,
                 input: Default::default(),
                 output: Default::default(),
+                subnode: Subnode::<T>::create_subnode(&mut self.current_node_id),
                 id,
             }
         }
@@ -4823,11 +5343,11 @@ mod pipeline {
             self.current_node_id += 1;
             NodeT {
                 log_level: LogLevel::Off,
-                //parent_id: 1,
                 properties,
                 _m: core::marker::PhantomData,
                 input: Default::default(),
                 output: Default::default(),
+                subnode: Subnode::<T>::create_subnode(&mut self.current_node_id),
                 id,
             }
         }
@@ -4842,11 +5362,11 @@ mod pipeline {
 
             NodeT {
                 log_level: LogLevel::Off,
-                //parent_id: 1,
                 properties,
                 _m: core::marker::PhantomData,
                 input: msg_group,
                 output: Default::default(),
+                subnode: Default::default(),
                 id,
             }
         }
@@ -4863,7 +5383,7 @@ mod pipeline {
 
         fn insert_node<N: Node>(&mut self, node: &'a NodeT<N>) {
             if !self.nodes.contains_key(&node.id) {
-                node.register(&mut self.nodes, &mut self.current_io_id);
+                NodeRegister::register(node, &mut self.nodes, &mut self.current_io_id)
             }
         }
 
@@ -4899,7 +5419,7 @@ mod pipeline {
                 }
             }).collect::<Vec<_>>();
 
-            let nodes = self.nodes.into_iter().map(|(id, node)| {
+            let nodes = self.nodes.into_iter().rev().map(|(id, node)| {
 
                 let io_info = node.io_info.into_iter().map(|((group, name), io)| {
                     let group = group.unwrap_or_default();
@@ -4918,7 +5438,7 @@ mod pipeline {
 
                 (id as _, crate::rpc::NodeObjInfo {
                     id: id as _,
-                    parent_id: -1,
+                    parent_id: node.parent_id.map(|id| id as i64).unwrap_or(-1),
                     name: node.name.to_string(),
                     alias: node.alias.unwrap_or_default().to_string(),
                     device_id: device_id.to_string(),
@@ -5020,9 +5540,8 @@ mod pipeline {
 
     pub struct NodeT<P: Node> {
         log_level: LogLevel,
-        // TODO: probably a better way to do parent id
-        //parent_id: i64,
         properties: P::Properties,
+        subnode: P::Subnode,
         _m: core::marker::PhantomData<P>,
         input: P::Input,
         output: P::Output,
@@ -5073,6 +5592,7 @@ mod pipeline {
         type Input = StereoDepthInputs;
         type Output = StereoDepthOutputs;
         type Properties = StereoDepthProperties;
+        type Subnode = ();
         const NAME: &str = "StereoDepth";
     }
 
@@ -5928,6 +6448,7 @@ mod pipeline {
         type Input = ImageAlignInputs;
         type Output = ImageAlignOutputs;
         type Properties = ImageAlignProperties;
+        type Subnode = ();
         const NAME: &str = "ImageAlign";
     }
 
@@ -5989,8 +6510,6 @@ mod pipeline {
         }
     }
 
-    // TODO: have a generic input wrapper that just uses this like NormalInput<T>
-    // since theres like 5 nodes with the same name & node type for input
     impl StaticIoDesc for Numbered<CameraFrame, 15> {
         const NAME: &str = "input";
         const NODE_TYPE: NodeType = NodeType::SReceiver;
@@ -6095,6 +6614,7 @@ mod pipeline {
         type Input = Input<Numbered<CameraFrame, 20>, RnopSerializer>;
         type Output = VideoEncoderOutputs;
         type Properties = VideoEncoderProperties;
+        type Subnode = ();
         const NAME: &str = "VideoEncoder";
     }
 
@@ -6247,13 +6767,174 @@ mod pipeline {
         }
     }
 
-    pub struct Pointcloud;
+    pub mod pointcloud_type {
+        pub struct WithColor;
+        pub struct WithoutColor;
+    }
 
-    impl Node for Pointcloud {
-        type Input = (Input<PointcloudConfig, RnopSerializer>, Input<Numbered<CameraFrame, 21>, RnopSerializer>);
-        type Output = (Output<PointcloudData, RnopDeserializer>, Output<Numbered<CameraFrame, 22>, RnopDeserializer>);
+    pub struct Pointcloud<T = pointcloud_type::WithoutColor>(core::marker::PhantomData<T>);
+
+    impl Node for Pointcloud<pointcloud_type::WithoutColor> {
+        type Input = PointcloudInputs;
+        type Output = PointcloudOutputs;
         type Properties = PointcloudProperties;
+        type Subnode = ();
         const NAME: &str = "PointCloud";
+    }
+
+    impl Node for Pointcloud<pointcloud_type::WithColor> {
+        type Input = PointcloudInputs;
+        type Output = PointcloudOutputs;
+        type Properties = PointcloudProperties;
+        type Subnode = NodeT<Sync<RgbPointcloudInputs>>;
+        const NAME: &str = "PointCloud";
+        const REGISTER_SELF: bool = true;
+    }
+
+    impl Subnode<Pointcloud<pointcloud_type::WithColor>> for NodeT<Sync<RgbPointcloudInputs>> {
+        fn create_subnode(id: &mut u32) -> Self {
+            let node_id = *id;
+            *id += 1;
+            NodeT {
+                log_level: LogLevel::Off,
+                properties: Default::default(),
+                _m: core::marker::PhantomData,
+                input: Default::default(),
+                output: Default::default(),
+                subnode: (),
+                id: node_id,
+            }
+        }
+    }
+
+    impl NodeT<Pointcloud<pointcloud_type::WithColor>> {
+        pub fn color_input(&self) -> InputRef<'_, Sync<RgbPointcloudInputs>, Numbered<CameraFrame, 27>, RnopSerializer> {
+            self.subnode.input.group.color.inputs(&self.subnode)
+        }
+
+        pub fn depth_input(&self) -> InputRef<'_, Sync<RgbPointcloudInputs>, Numbered<CameraFrame, 26>, RnopSerializer> {
+            self.subnode.input.group.depth.inputs(&self.subnode)
+        }
+
+        pub fn sync_output(&self) -> OutputRef<'_, Sync<RgbPointcloudInputs>, MessageGroup, RnopDeserializer> {
+            self.subnode.output.outputs(&self.subnode)
+        }
+    }
+
+    #[derive(Default)]
+    pub struct PointcloudInputs {
+        config: Input<PointcloudConfig, RnopSerializer>,
+        sync: Input<In<MessageGroup>, RnopSerializer>,
+    }
+
+    impl StaticIoDesc for In<MessageGroup> {
+        const NAME: &str = "inSync";
+        const NODE_TYPE: NodeType = NodeType::SReceiver;
+        const DEFAULT_QUEUE_SIZE: Option<i32> = Some(4);
+    }
+
+    #[derive(Default)]
+    pub struct PointcloudOutputs {
+        passthrough_depth: Output<Numbered<CameraFrame, 22>, RnopDeserializer>,
+        pointcloud: Output<PointcloudData, RnopDeserializer>,
+    }
+
+    pub struct PointcloudOutputRef<'a, P: Node> {
+        pub passthrough_depth: OutputRef<'a, P, Numbered<CameraFrame, 22>, RnopDeserializer>,
+        pub pointcloud: OutputRef<'a, P, PointcloudData, RnopDeserializer>,
+    }
+
+    impl IoRegister for PointcloudOutputs {
+        fn register<'a, 'b>(&'a self, info: &mut IoInfo<'a, 'b>) {
+            let Self {
+                passthrough_depth,
+                pointcloud,
+            } = self;
+
+            passthrough_depth.register(info);
+            pointcloud.register(info);
+        }
+    }
+
+    impl Outputs for PointcloudOutputs {
+        type Outputs<'a, N> = PointcloudOutputRef<'a, N> where Self: 'a, N: Node + 'a;
+        fn outputs<'a, T: Node>(&'a self, node: &'a NodeT<T>) -> Self::Outputs<'a, T> {
+            let Self {
+                passthrough_depth,
+                pointcloud,
+            } = self;
+
+            PointcloudOutputRef {
+                passthrough_depth: passthrough_depth.outputs(node),
+                pointcloud: pointcloud.outputs(node),
+            }
+        }
+    }
+
+
+
+    #[derive(Default)]
+    pub struct RgbPointcloudInputs {
+        depth: Input<Numbered<CameraFrame, 26>, RnopSerializer>,
+        color: Input<Numbered<CameraFrame, 27>, RnopSerializer>,
+    }
+
+    impl StaticIoDesc for Numbered<CameraFrame, 26> {
+        const NAME: &str = "depth";
+        const GROUP: Option<&str> = Some("inputs");
+        const NODE_TYPE: NodeType = NodeType::SReceiver;
+        const DEFAULT_QUEUE_SIZE: Option<i32> = Some(4);
+    }
+
+    impl StaticIoDesc for Numbered<CameraFrame, 27> {
+        const NAME: &str = "color";
+        const GROUP: Option<&str> = Some("inputs");
+        const NODE_TYPE: NodeType = NodeType::SReceiver;
+        const DEFAULT_QUEUE_SIZE: Option<i32> = Some(10);
+    }
+
+
+    impl IoRegister for RgbPointcloudInputs {
+        fn register<'a, 'b>(&'a self, info: &mut IoInfo<'a, 'b>) {
+            let Self {
+                depth,
+                color
+            } = self;
+            depth.register(info);
+            color.register(info);
+        }
+    }
+
+    impl IoRegister for PointcloudInputs {
+        fn register<'a, 'b>(&'a self, info: &mut IoInfo<'a, 'b>) {
+            let Self {
+                config,
+                sync,
+            } = self;
+
+            config.register(info);
+            sync.register(info);
+        }
+    }
+
+    impl Inputs for PointcloudInputs {
+        type Inputs<'a, N> = PointcloudInputRef<'a, N> where Self: 'a, N: Node + 'a;
+        fn inputs<'a, T: Node>(&'a self, node: &'a NodeT<T>) -> Self::Inputs<'a, T> {
+            let Self {
+                config,
+                sync,
+            } = self;
+
+            PointcloudInputRef {
+                config: config.inputs(node),
+                sync: sync.inputs(node),
+            }
+        }
+    }
+
+    pub struct PointcloudInputRef<'a, P: Node> {
+        pub config: InputRef<'a, P, PointcloudConfig, RnopSerializer>,
+        pub sync: InputRef<'a, P, In<MessageGroup>, RnopSerializer>,
     }
 
     impl StaticIoDesc for PointcloudConfig {
@@ -6261,12 +6942,13 @@ mod pipeline {
         const NODE_TYPE: NodeType = NodeType::SReceiver;
     }
 
-    // TODO:
-    // inputColor can also be passed in, so the whole rgbd pointcloud can be made on the device
-    // this might require a sync subnode tho
-    // - a test might have to be done
     impl StaticIoDesc for Numbered<CameraFrame, 21> {
         const NAME: &str = "inputDepth";
+        const NODE_TYPE: NodeType = NodeType::SReceiver;
+    }
+
+    impl StaticIoDesc for Numbered<CameraFrame, 25> {
+        const NAME: &str = "inputColor";
         const NODE_TYPE: NodeType = NodeType::SReceiver;
     }
     
@@ -6280,7 +6962,7 @@ mod pipeline {
         const NODE_TYPE: NodeType = NodeType::MSender;
     }
 
-    #[derive(serde::Serialize, serde::Deserialize, Debug)]
+    #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
     pub struct PointcloudProperties {
         pub initial_config: PointcloudConfig,
         pub num_frames_pool: i32,
@@ -6295,13 +6977,66 @@ mod pipeline {
         }
     }
 
-    #[derive(serde::Serialize, serde::Deserialize, Debug)]
+    #[derive(serde_repr::Deserialize_repr, serde_repr::Serialize_repr, Debug, Hash, PartialEq, Eq, Default)]
+    #[repr(u8)]
+    
+    enum CoordinateSystem {
+        #[default]
+        Default = 0,
+        CameraSocket = 1,
+        Housing = 2,
+    }
+
+    #[derive(serde_repr::Deserialize_repr, serde_repr::Serialize_repr, Debug, Hash, PartialEq, Eq, Default)]
+    #[repr(i32)]
+    enum HousingCoordinate {
+        #[default]
+        Auto = -1,
+        A = 0,
+        B = 1,
+        C = 2,
+        D = 3,
+        E = 4,
+        F = 5,
+        G = 6,
+        H = 7,
+        I = 8,
+        J = 9,
+        AFront = 10,
+        BFront = 11,
+        CFront = 12,
+        DFront = 13,
+        EFront = 14,
+        FFront = 15,
+        GFront = 16,
+        HFront = 17,
+        IFront = 18,
+        JFront = 19,
+        VesaA = 20,
+        VesaB = 21,
+        VesaC = 22,
+        VesaD = 23,
+        VesaE = 24,
+        VesaF = 25,
+        VesaG = 26,
+        VesaH = 27,
+        VesaI = 28,
+        VesaJ = 29,
+        Imu = 30,
+    }
+
+    #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
     pub struct PointcloudConfig {
         sequence: i32,
         timestamp: Timestamp,
         device_timestamp: Timestamp,
-        pub sparse: bool,
+        organized: bool,
         pub transformation_matrix: [[f32; 4]; 4],
+        length_unit: LengthUnit,
+        coordinate_system: CoordinateSystem,
+        target_camera_socket: crate::rpc::CameraBoardSocket,
+        target_housing: HousingCoordinate,
+        use_spec_translation: bool,
     }
 
     impl MetadataOnly for PointcloudConfig {}
@@ -6319,11 +7054,16 @@ mod pipeline {
                 sequence: 0,
                 timestamp: Default::default(),
                 device_timestamp: Default::default(),
-                sparse: false,
+                organized: false,
                 transformation_matrix: [[1., 0., 0., 0.,], 
                                         [0., 1., 0., 0.,],
                                         [0., 0., 1., 0.,],
                                         [0., 0., 0., 1.,]],
+                length_unit: LengthUnit::Millimeter,
+                coordinate_system: Default::default(),
+                target_camera_socket: Default::default(),
+                target_housing: Default::default(),
+                use_spec_translation: true,
             }
         }
     }
@@ -6358,6 +7098,7 @@ mod pipeline {
         type Input = (Input<ImageManipConfig, RnopSerializer>, Input<Numbered<CameraFrame, 23>, RnopSerializer>);
         type Output = Output<Numbered<CameraFrame, 24>, RnopDeserializer>;
         type Properties = ImageManipProperties;
+        type Subnode = ();
         const NAME: &str = "ImageManip";
     }
 
@@ -6589,7 +7330,9 @@ mod pipeline {
         type Input = MsgGroup<T>;
         type Output = Output<MessageGroup, RnopDeserializer>;
         type Properties = SyncProperties;
+        type Subnode = ();
         const NAME: &str = "Sync";
+        //const ALIAS: Option<&str> = Some("sync");
     }
 
     impl <G> Inputs for MsgGroup<G> {
@@ -6631,6 +7374,7 @@ mod pipeline {
                     properties: w,
                     log_level: self.log_level,
                     io_info: io_info.inner,
+                    parent_id: None,
                 };
 
                 pipe.nodes.insert(self.id, info);
@@ -6754,7 +7498,7 @@ mod pipeline {
         }
     }
 
-    #[derive(serde::Serialize, serde::Deserialize, Debug)]
+    #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
     pub struct SyncProperties {
         pub sync_threshold_ns: i64,
         pub sync_attempts: i64,
@@ -6764,7 +7508,7 @@ mod pipeline {
     impl core::default::Default for SyncProperties {
         fn default() -> Self {
             Self {
-                sync_threshold_ns: 1000000,
+                sync_threshold_ns: 10000000,
                 sync_attempts: -1,
                 processor: crate::rpc::ProcessorType::LeonCss,
             }
@@ -6786,7 +7530,7 @@ mod pipeline {
     }
 
 
-    #[derive(Debug, serde::Deserialize)]
+    #[derive(Debug, serde::Deserialize, serde::Serialize)]
     pub struct MessageGroup {
         msgs: Vec<(Option<DataType>, String)>,
         timestamp: Timestamp,
@@ -6797,10 +7541,16 @@ mod pipeline {
     impl StaticIoDesc for MessageGroup {
         const NAME: &str = "out";
         const NODE_TYPE: NodeType = NodeType::MSender;
+        const DEFAULT_QUEUE_SIZE: Option<i32> = Some(10);
     }
 
 
     impl <D: Deserializer> IoDeserializeable<D> for MessageGroup {
+        type Metadata = MessageGroup;
+        type Output = GroupedMessage;
+    }
+
+    impl <S: Serializer> IoSerializeable<S> for MessageGroup {
         type Metadata = MessageGroup;
         type Output = GroupedMessage;
     }
@@ -6857,6 +7607,7 @@ mod pipeline {
         _t: T,
     }
 
+    #[derive(Default)]
     pub struct MsgGroup<T> {
         group: T,
     }
@@ -7135,6 +7886,253 @@ mod pipeline {
         //panic!()
     }
 
+    #[test]
+    fn pipeline_schema_rgb_pcl() {
+        const CAMERA_SIZE: (u32, u32) = (1280, 720);
+
+        let mut pipe = Pipeline::new();
+
+        let mut cam_1 = pipe.create_node::<Camera>();
+        cam_1.properties_mut().board_socket = crate::rpc::CameraBoardSocket::B;
+
+        cam_1.request_output(CameraCapability {
+            size: Capability::new_single(CAMERA_SIZE),
+            fps: Capability::new_none(),
+            ty: None,
+            enable_undistortion: None,
+            isp_output: true,
+            resize_mode: FrameResize::Crop,
+        });
+
+        let mock_color = cam_1.requested_camera_outputs().next().unwrap();
+
+
+        let mut cam_2 = pipe.create_node::<Camera>();
+        cam_2.properties_mut().board_socket = crate::rpc::CameraBoardSocket::C;
+
+        cam_2.request_output(CameraCapability {
+            size: Capability::new_single(CAMERA_SIZE),
+            fps: Capability::new_none(),
+            ty: None,
+            enable_undistortion: None,
+            isp_output: true,
+            resize_mode: FrameResize::Crop,
+        });
+
+        let mock_depth = cam_2.requested_camera_outputs().next().unwrap();
+
+        let mut pc = pipe.create_node::<Pointcloud<pointcloud_type::WithColor>>();
+
+        pipe.link(mock_color, pc.color_input());
+        pipe.link(mock_depth, pc.depth_input());
+
+        let mut out = pipe.create_node::<XLinkOut>();
+
+        pipe.link(pc.sync_output(), pc.input().sync);
+
+
+        let xlink_out = pipe.create_output_queue(pc.output().pointcloud, &mut out);
+
+        assert_eq!(pipe.connections.len(), 4);
+        assert_eq!(pipe.nodes.len(), 5);
+        let schema = pipe.build("test id");
+    }
+
+    #[test]
+    fn pipeline_schema_rgb_pcl_full() {
+        const DEVICE_ID: &str = "test";
+        const CAMERA_SIZE: (u32, u32) = (640, 480);
+        const CAMERA_FPS: f32 = 15.;
+
+        let mut pipe = Pipeline::new();
+
+        // COLOR INPUT START
+
+        let mut color = pipe.create_node::<Camera>();
+
+        {
+            color.properties_mut().board_socket = crate::rpc::CameraBoardSocket::A;
+        }
+
+        color.request_output(CameraCapability {
+            size: Capability::new_single(CAMERA_SIZE),
+            fps: Capability::new_single(CAMERA_FPS),
+            ty: Some(FrameType::Rgb888i),
+            enable_undistortion: None,
+            isp_output: false,
+            resize_mode: FrameResize::Crop,
+        });
+        let color_cam = color.requested_camera_outputs().next().unwrap();
+
+        // COLOR INPUT END
+
+        // STEREO INPUT START
+
+        let mut camera_left = pipe.create_node::<Camera>();
+        let cam_l = camera_left.properties_mut();
+        {
+            // TODO: figure out how exactly these regions are being changed
+            //      - they seem to differ every time its ran
+            //      - maybe from querying the device?
+            cam_l.initial_control.af_region.x = 17586;
+            cam_l.initial_control.af_region.priority = 17586;
+
+            cam_l.initial_control.ae_lock_mode = false;
+            cam_l.initial_control.awb_lock_mode = false;
+
+
+            cam_l.initial_control.strobe_config.enable = 0;
+            // control_mode: 132, effect_mode: 60, frame_sync_mode: 25
+            // control_mode: 27, effect_mode: 146, frame_sync_mode: 35
+            cam_l.initial_control.control_mode = 27;
+            cam_l.initial_control.effect_mode = 146;
+            cam_l.initial_control.frame_sync_mode = 35;
+            cam_l.initial_control.enable_hdr = false;
+
+            cam_l.board_socket = crate::rpc::CameraBoardSocket::B;
+        }
+
+        camera_left.request_output(CameraCapability {
+            size: Capability::new_single(CAMERA_SIZE),
+            fps: Capability::new_single(CAMERA_FPS),
+            ty: None,
+            enable_undistortion: None,
+            isp_output: false,
+            resize_mode: FrameResize::Crop,
+        });
+
+        let cam_left = camera_left.requested_camera_outputs().next().unwrap();
+
+        let mut camera_right = pipe.create_node::<Camera>();
+        let cam_r = camera_right.properties_mut();
+        {
+            cam_r.initial_control.ae_region.x = 48944;
+            cam_r.initial_control.ae_region.y = 31727;
+            cam_r.initial_control.ae_region.width = 24153;
+            cam_r.initial_control.ae_region.height = 0;
+            cam_r.initial_control.ae_region.priority = 3;
+
+            // x: 0, y: 0, width: 28518, height: 118, priority: 0
+            cam_r.initial_control.af_region.width = 28518;
+            cam_r.initial_control.af_region.height = 118;
+
+            cam_r.initial_control.ae_lock_mode = false;
+            cam_r.initial_control.awb_lock_mode = false;
+
+            cam_r.initial_control.strobe_config.enable = 0;
+            cam_r.initial_control.contrast = -127;
+            cam_r.initial_control.saturation = 2;
+            // low_power_frame_burst: 176, low_power_frame_discard: 132
+            cam_r.initial_control.low_power_frame_burst = 176;
+            cam_r.initial_control.low_power_frame_discard = 4;
+            cam_r.initial_control.enable_hdr = false;
+
+            cam_r.board_socket = crate::rpc::CameraBoardSocket::C;
+        }
+
+        camera_right.request_output(CameraCapability {
+            size: Capability::new_single(CAMERA_SIZE),
+            fps: Capability::new_single(CAMERA_FPS),
+            ty: None,
+            enable_undistortion: None,
+            isp_output: false,
+            resize_mode: FrameResize::Crop,
+        });
+
+        let cam_right = camera_right.requested_camera_outputs().next().unwrap();
+
+
+        let mut stereo = pipe.create_node::<StereoDepth>();
+
+        let props = stereo.properties_mut();
+
+        {
+            use crate::pipeline::Filter;
+            props.initial_config.algorithm_control.enable_extended = false;
+            props.initial_config.algorithm_control.enable_left_right_check = true;
+            props.initial_config.algorithm_control.enable_software_left_right_check = false;
+            props.initial_config.algorithm_control.enable_subpixel = false;
+            props.initial_config.algorithm_control.subpixel_fractional_bits = 3;
+
+            props.initial_config.algorithm_control.depth_align = DepthAlign::Center;
+
+
+            props.initial_config.post_processing.spatial_filter.enable = false;
+            props.initial_config.post_processing.temporal_filter.enable = false;
+            props.initial_config.post_processing.speckle_filter.enable = false;
+            props.initial_config.post_processing.hole_filling.enable = true;
+            props.initial_config.post_processing.hole_filling.invalidate_disparities = true;
+            props.initial_config.post_processing.adaptive_median_filter.enable = true;
+            props.initial_config.census_transform.enable_mean_mode = true;
+
+            props.initial_config.cost_matching.enable_companding = false;
+            props.initial_config.cost_matching.enable_software_confidence_thresholding = false;
+
+            props.initial_config.cost_aggregation.p1_config.enable_adaptive = true;
+            props.initial_config.cost_aggregation.p2_config.enable_adaptive = true;
+
+            props.initial_config.confidence_metrics.flatness_override = false;
+
+            props.enable_rectification = true;
+            props.enable_runtime_stereo_mode_switch = false;
+            props.keep_aspect_ratio = true;
+            props.focal_length_from_calibration = true;
+            props.enable_frame_sync = true;
+
+            props.initial_config.post_processing.filtering_order = [Filter::Decimation, Filter::Median, Filter::Speckle, Filter::Spatial, Filter::Temporal];
+            props.initial_config.post_processing.median = MedianFilter::Kernel7x7;
+            props.initial_config.post_processing.spatial_filter.enable = true;
+            props.initial_config.post_processing.spatial_filter.hole_filling_radius = 1;
+            props.initial_config.post_processing.temporal_filter.enable = true;
+            props.initial_config.post_processing.temporal_filter.alpha = 0.5;
+            props.initial_config.post_processing.threshold_filter.max_range = 15000;
+            props.initial_config.post_processing.speckle_filter.enable = true;
+            props.initial_config.post_processing.speckle_filter.range = 200;
+            props.initial_config.post_processing.decimation_filter.decimation_factor = 2;
+            props.initial_config.post_processing.hole_filling.high_confidence_threshold = 100;
+            props.initial_config.post_processing.hole_filling.fill_confidence_threshold = 210;
+            props.initial_config.post_processing.hole_filling.min_valid_disparity = 3;
+
+            props.initial_config.cost_matching.confidence_threshold = 15;
+
+            props.initial_config.cost_aggregation.p1_config.default_value = 45;
+            props.initial_config.cost_aggregation.p1_config.edge_value = 40;
+            props.initial_config.cost_aggregation.p1_config.smooth_value = 49;
+
+            props.initial_config.cost_aggregation.p2_config.default_value = 95;
+            props.initial_config.cost_aggregation.p2_config.edge_value = 90;
+            props.initial_config.cost_aggregation.p2_config.smooth_value = 99;
+
+            props.initial_config.confidence_metrics.motion_vector_confidence_weight = 10;
+            props.initial_config.confidence_metrics.flatness_confidence_weight = 2;
+            props.initial_config.confidence_metrics.flatness_confidence_threshold = 5;
+
+            props.post_processing_shaves = 3;
+            props.post_processing_memory_slices = 3;
+        }
+
+        pipe.link(cam_left, stereo.input().left);
+        pipe.link(cam_right, stereo.input().right);
+
+        let mut align = pipe.create_node::<ImageAlign>();
+        // STEREO INPUT END
+
+        pipe.link(stereo.output().depth, align.input().input);
+        pipe.link(color_cam.clone(), align.input().align_to);
+
+        let mut pointcloud = pipe.create_node::<Pointcloud<pointcloud_type::WithColor>>();
+
+        pipe.link(align.output().aligned, pointcloud.depth_input());
+        pipe.link(color_cam, pointcloud.color_input());
+
+        //pipe.link(pointcloud.sync_output(), pointcloud.input().sync);
+
+        let mut out = pipe.create_node::<XLinkOut>();
+        let xlink_out = pipe.create_output_queue(pointcloud.output().pointcloud, &mut out);
+
+        let schema = pipe.build(DEVICE_ID);
+        //panic!("{schema:?}");
+    }
 
     #[test]
     fn pipeline_queue() {
@@ -7206,7 +8204,7 @@ mod pipeline {
 
             def.initial_control.ae_lock_mode = false;
             def.initial_control.awb_lock_mode = false;
-            def.initial_control.strobe_config.enable = false;
+            def.initial_control.strobe_config.enable = 0;
             def.initial_control.enable_hdr = false;
             def.board_socket = crate::rpc::CameraBoardSocket::A;
 
@@ -7219,16 +8217,6 @@ mod pipeline {
                 isp_output: false,
                 resize_mode: FrameResize::Crop,
             });
-            /*
-            let mut w = vec![];
-            RnopSerializer::serialize(&def, &mut w).unwrap();
-            */
-
-            //assert_eq!(original, w);
-
-            // TODO:: compare the ser from the default properties to what was given
-            // - might be an issue with not providing an ouptut_request
-
 
             let o1 = vec![185,6,185,1,184,0,186,2,129,128,7,129,176,4,185,1,190,190,0,190,0];
             let o2 = RnopDeserializer::deserialize::<CameraCapability>(&o1).unwrap();
@@ -7353,7 +8341,7 @@ mod pipeline {
             cam_r.initial_control.ae_lock_mode = false;
             cam_r.initial_control.awb_lock_mode = false;
 
-            cam_r.initial_control.strobe_config.enable = false;
+            cam_r.initial_control.strobe_config.enable = 0;
             cam_r.initial_control.contrast = -127;
             cam_r.initial_control.saturation = 2;
             // low_power_frame_burst: 176, low_power_frame_discard: 132
@@ -7396,7 +8384,7 @@ mod pipeline {
             cam_l.initial_control.awb_lock_mode = false;
 
 
-            cam_l.initial_control.strobe_config.enable = false;
+            cam_l.initial_control.strobe_config.enable = 0;
             // control_mode: 132, effect_mode: 60, frame_sync_mode: 25
             // control_mode: 27, effect_mode: 146, frame_sync_mode: 35
             cam_l.initial_control.control_mode = 27;
@@ -7453,6 +8441,196 @@ mod pipeline {
 
         //panic!("{align:?}");
     }
+
+
+    #[test]
+    fn rgb_pcl_properties() {
+        /*
+            (7, NodeObjInfo { id: 7, parent_id: -1, name: "XLinkOut", alias: "", device_id: "test", device_node: true, properties: [185, 5, 136, 0, 0, 128, 191, 189, 9, 95, 95, 120, 95, 48, 95, 111, 117, 116, 0, 255, 255], log_level: Off, io_info: [(("", "in"), NodeIoInfo { group: "", name: "in", ty: SReceiver, blocking: true, queue_size: 3, wait_for_message: false, id: 40 })] }),
+        */
+        /*
+            [7,{"alias":"","deviceId":"19443010A1A1872D00","deviceNode":true,"id":7,"ioInfo":[[["","pipelineEventOutput"],{"blocking":false,"group":"","id":49,"name":"pipelineEventOutput","queueSize":8,"type":0,"waitForMessage":false}],[["","in"],{"blocking":true,"group":"","id":48,"name":"in","queueSize":3,"type":3,"waitForMessage":false}]],"logLevel":0,"name":"XLinkOut","parentId":-1,"properties":[185,5,136,0,0,128,191,189,10,95,95,120,95,54,95,95,111,117,116,0,255,255]}],
+        */
+
+        let xl1 = RnopDeserializer::deserialize::<XLinkOutProperties>(&[185,5,136,0,0,128,191,189,10,95,95,120,95,54,95,95,111,117,116,0,255,255]).unwrap();
+        let xl2 = RnopDeserializer::deserialize::<XLinkOutProperties>(&[185, 5, 136, 0, 0, 128, 191, 189, 9, 95, 95, 120, 95, 48, 95, 111, 117, 116, 0, 255, 255]).unwrap();
+
+        // only difference is the name
+        //assert_eq!(xl1, xl2);
+
+        /*
+            (6, NodeObjInfo { id: 6, parent_id: 5, name: "Sync", alias: "sync", device_id: "test", device_node: true, properties: [185, 3, 134, 64, 66, 15, 0, 255, 0], log_level: Off, io_info: [(("inputs", "color"), NodeIoInfo { group: "inputs", name: "color", ty: SReceiver, blocking: false, queue_size: 10, wait_for_message: false, id: 42 }), (("", "out"), NodeIoInfo { group: "", name: "out", ty: MSender, blocking: false, queue_size: 8, wait_for_message: false, id: 43 }), (("inputs", "depth"), NodeIoInfo { group: "inputs", name: "depth", ty: SReceiver, blocking: false, queue_size: 4, wait_for_message: false, id: 41 })] }),
+        */
+        /*
+            [6,{"alias":"sync","deviceId":"19443010A1A1872D00","deviceNode":true,"id":6,"ioInfo":[[["","pipelineEventOutput"],{"blocking":false,"group":"","id":46,"name":"pipelineEventOutput","queueSize":8,"type":0,"waitForMessage":false}],[["inputs","depth"],{"blocking":false,"group":"inputs","id":45,"name":"depth","queueSize":4,"type":3,"waitForMessage":false}],[["","out"],{"blocking":false,"group":"","id":47,"name":"out","queueSize":8,"type":0,"waitForMessage":false}],[["inputs","color"],{"blocking":false,"group":"inputs","id":44,"name":"color","queueSize":10,"type":3,"waitForMessage":false}]],"logLevel":0,"name":"Sync","parentId":5,"properties":[185,3,134,128,150,152,0,255,0]}],
+        */
+
+        let s1 = RnopDeserializer::deserialize::<SyncProperties>(&[185,3,134,128,150,152,0,255,0]).unwrap();
+        let mut s2 = RnopDeserializer::deserialize::<SyncProperties>(&[185, 3, 134, 64, 66, 15, 0, 255, 0]).unwrap();
+        s2.sync_threshold_ns = 10000000;
+
+        assert_eq!(s1, s2);
+
+        /*
+            [4,{"alias":"","deviceId":"19443010A1A1872D00","deviceNode":true,"id":4,"ioInfo":[[["","passthroughInput"],{"blocking":false,"group":"","id":38,"name":"passthroughInput","queueSize":8,"type":0,"waitForMessage":false}],[["","outputAligned"],{"blocking":false,"group":"","id":37,"name":"outputAligned","queueSize":8,"type":0,"waitForMessage":false}],[["","pipelineEventOutput"],{"blocking":false,"group":"","id":36,"name":"pipelineEventOutput","queueSize":8,"type":0,"waitForMessage":false}],[["","inputAlignTo"],{"blocking":false,"group":"","id":35,"name":"inputAlignTo","queueSize":1,"type":3,"waitForMessage":true}],[["","input"],{"blocking":false,"group":"","id":34,"name":"input","queueSize":4,"type":3,"waitForMessage":false}],[["","inputConfig"],{"blocking":false,"group":"","id":33,"name":"inputConfig","queueSize":4,"type":3,"waitForMessage":false}]],"logLevel":0,"name":"ImageAlign","parentId":-1,"properties":[185,8,185,1,0,4,0,0,188,0,255,1,2]}],
+        */
+        /*
+            (4, NodeObjInfo { id: 4, parent_id: -1, name: "ImageAlign", alias: "", device_id: "test", device_node: true, properties: [185, 8, 185, 1, 0, 4, 0, 0, 188, 0, 255, 1, 2], log_level: Off, io_info: [(("", "inputConfig"), NodeIoInfo { group: "", name: "inputConfig", ty: SReceiver, blocking: false, queue_size: 8, wait_for_message: false, id: 25 }), (("", "passthroughInput"), NodeIoInfo { group: "", name: "passthroughInput", ty: MSender, blocking: false, queue_size: 8, wait_for_message: false, id: 29 }), (("", "input"), NodeIoInfo { group: "", name: "input", ty: SReceiver, blocking: false, queue_size: 4, wait_for_message: false, id: 26 }), (("", "inputAlignTo"), NodeIoInfo { group: "", name: "inputAlignTo", ty: SReceiver, blocking: false, queue_size: 1, wait_for_message: true, id: 27 }), (("", "outputAligned"), NodeIoInfo { group: "", name: "outputAligned", ty: MSender, blocking: false, queue_size: 8, wait_for_message: false, id: 28 })] }),
+       */
+
+        // literally everything is the same for imagealign
+
+        /*
+            [3,{"alias":"","deviceId":"19443010A1A1872D00","deviceNode":true,"id":3,"ioInfo":[[["","confidenceMap"],{"blocking":false,"group":"","id":32,"name":"confidenceMap","queueSize":8,"type":0,"waitForMessage":false}],[["","debugExtDispLrCheckIt2"],{"blocking":false,"group":"","id":30,"name":"debugExtDispLrCheckIt2","queueSize":8,"type":0,"waitForMessage":false}],[["","debugDispLrCheckIt2"],{"blocking":false,"group":"","id":28,"name":"debugDispLrCheckIt2","queueSize":8,"type":0,"waitForMessage":false}],[["","rectifiedLeft"],{"blocking":false,"group":"","id":24,"name":"rectifiedLeft","queueSize":8,"type":0,"waitForMessage":false}],[["","syncedRight"],{"blocking":false,"group":"","id":23,"name":"syncedRight","queueSize":8,"type":0,"waitForMessage":false}],[["","syncedLeft"],{"blocking":false,"group":"","id":22,"name":"syncedLeft","queueSize":8,"type":0,"waitForMessage":false}],[["","disparity"],{"blocking":false,"group":"","id":21,"name":"disparity","queueSize":8,"type":0,"waitForMessage":false}],[["","debugDispCostDump"],{"blocking":false,"group":"","id":31,"name":"debugDispCostDump","queueSize":8,"type":0,"waitForMessage":false}],[["","depth"],{"blocking":false,"group":"","id":20,"name":"depth","queueSize":8,"type":0,"waitForMessage":false}],[["","pipelineEventOutput"],{"blocking":false,"group":"","id":19,"name":"pipelineEventOutput","queueSize":8,"type":0,"waitForMessage":false}],[["","outConfig"],{"blocking":false,"group":"","id":26,"name":"outConfig","queueSize":8,"type":0,"waitForMessage":false}],[["","right"],{"blocking":true,"group":"","id":18,"name":"right","queueSize":3,"type":3,"waitForMessage":false}],[["","left"],{"blocking":true,"group":"","id":17,"name":"left","queueSize":3,"type":3,"waitForMessage":false}],[["","rectifiedRight"],{"blocking":false,"group":"","id":25,"name":"rectifiedRight","queueSize":8,"type":0,"waitForMessage":false}],[["","inputAlignTo"],{"blocking":false,"group":"","id":16,"name":"inputAlignTo","queueSize":1,"type":3,"waitForMessage":true}],[["","debugExtDispLrCheckIt1"],{"blocking":false,"group":"","id":29,"name":"debugExtDispLrCheckIt1","queueSize":8,"type":0,"waitForMessage":false}],[["","debugDispLrCheckIt1"],{"blocking":false,"group":"","id":27,"name":"debugDispLrCheckIt1","queueSize":8,"type":0,"waitForMessage":false}],[["","inputConfig"],{"blocking":true,"group":"","id":15,"name":"inputConfig","queueSize":3,"type":3,"waitForMessage":false}]],"logLevel":0,"name":"StereoDepth","parentId":-1,"properties":[185,23,185,7,185,12,0,2,136,0,0,122,68,1,0,1,1,10,5,0,190,0,185,11,186,5,3,1,2,4,5,0,0,185,5,0,2,136,0,0,0,63,3,1,185,4,0,3,136,205,204,204,62,3,185,2,0,134,255,255,0,0,185,2,0,133,0,1,185,3,0,50,2,185,2,1,0,185,5,1,128,210,128,200,1,1,185,2,1,128,200,185,6,255,0,1,0,1,1,185,6,1,0,0,55,0,185,3,0,2,127,185,7,1,128,250,129,244,1,128,250,129,244,1,185,6,1,11,10,22,15,5,185,4,1,33,22,63,185,6,20,4,1,8,2,0,2,255,1,0,190,190,190,190,1,185,5,189,0,189,0,190,16,16,0,3,255,255,1,190,1,190,190,190,190,190,190]}],
+        */
+        /*
+            (3, NodeObjInfo { id: 3, parent_id: -1, name: "StereoDepth", alias: "", device_id: "test", device_node: true, properties: [185, 23, 185, 7, 185, 12, 2, 2, 136, 0, 0, 122, 68, 1, 0, 0, 0, 10, 3, 0, 190, 0, 185, 11, 186, 5, 1, 3, 2, 4, 5, 7, 0, 185, 5, 1, 1, 136, 0, 0, 0, 63, 3, 1, 185, 4, 1, 3, 136, 0, 0, 0, 63, 3, 185, 2, 0, 133, 152, 58, 185, 2, 0, 133, 0, 1, 185, 3, 1, 128, 200, 2, 185, 2, 2, 0, 185, 5, 1, 100, 128, 210, 3, 1, 185, 2, 1, 128, 200, 185, 6, 255, 0, 1, 0, 1, 1, 185, 6, 1, 0, 0, 15, 0, 185, 3, 0, 2, 127, 185, 7, 1, 128, 250, 129, 244, 1, 128, 250, 129, 244, 1, 185, 6, 1, 45, 40, 49, 15, 5, 185, 4, 1, 95, 90, 99, 185, 6, 20, 10, 1, 2, 5, 0, 2, 255, 1, 0, 190, 190, 190, 190, 1, 185, 5, 189, 0, 189, 0, 190, 16, 16, 0, 3, 3, 3, 1, 190, 1, 190, 190, 190, 190, 190, 190], log_level: Off, io_info: [(("", "syncedRight"), NodeIoInfo { group: "", name: "syncedRight", ty: MSender, blocking: false, queue_size: 8, wait_for_message: false, id: 7 }), (("", "rectifiedRight"), NodeIoInfo { group: "", name: "rectifiedRight", ty: MSender, blocking: false, queue_size: 8, wait_for_message: false, id: 9 }), (("", "debugDispLrCheckIt2"), NodeIoInfo { group: "", name: "debugDispLrCheckIt2", ty: MSender, blocking: false, queue_size: 8, wait_for_message: false, id: 12 }), (("", "inputAlignTo"), NodeIoInfo { group: "", name: "inputAlignTo", ty: SReceiver, blocking: false, queue_size: 8, wait_for_message: false, id: 1 }), (("", "disparity"), NodeIoInfo { group: "", name: "disparity", ty: MSender, blocking: false, queue_size: 8, wait_for_message: false, id: 5 }), (("", "debugDispLrCheckIt1"), NodeIoInfo { group: "", name: "debugDispLrCheckIt1", ty: MSender, blocking: false, queue_size: 8, wait_for_message: false, id: 11 }), (("", "debugDispCostDump"), NodeIoInfo { group: "", name: "debugDispCostDump", ty: MSender, blocking: false, queue_size: 8, wait_for_message: false, id: 15 }), (("", "outConfig"), NodeIoInfo { group: "", name: "outConfig", ty: MSender, blocking: false, queue_size: 8, wait_for_message: false, id: 10 }), (("", "debugExtDispLrCheckIt2"), NodeIoInfo { group: "", name: "debugExtDispLrCheckIt2", ty: MSender, blocking: false, queue_size: 8, wait_for_message: false, id: 14 }), (("", "left"), NodeIoInfo { group: "", name: "left", ty: SReceiver, blocking: true, queue_size: 3, wait_for_message: false, id: 2 }), (("", "right"), NodeIoInfo { group: "", name: "right", ty: SReceiver, blocking: true, queue_size: 3, wait_for_message: false, id: 3 }), (("", "syncedLeft"), NodeIoInfo { group: "", name: "syncedLeft", ty: MSender, blocking: false, queue_size: 8, wait_for_message: false, id: 6 }), (("", "depth"), NodeIoInfo { group: "", name: "depth", ty: MSender, blocking: false, queue_size: 8, wait_for_message: false, id: 4 }), (("", "confidenceMap"), NodeIoInfo { group: "", name: "confidenceMap", ty: MSender, blocking: false, queue_size: 8, wait_for_message: false, id: 16 }), (("", "inputConfig"), NodeIoInfo { group: "", name: "inputConfig", ty: SReceiver, blocking: true, queue_size: 8, wait_for_message: false, id: 0 }), (("", "rectifiedLeft"), NodeIoInfo { group: "", name: "rectifiedLeft", ty: MSender, blocking: false, queue_size: 8, wait_for_message: false, id: 8 }), (("", "debugExtDispLrCheckIt1"), NodeIoInfo { group: "", name: "debugExtDispLrCheckIt1", ty: MSender, blocking: false, queue_size: 8, wait_for_message: false, id: 13 })] }),
+        */
+
+        let sd1 = RnopDeserializer::deserialize::<StereoDepthProperties>(&[185,23,185,7,185,12,0,2,136,0,0,122,68,1,0,1,1,10,5,0,190,0,185,11,186,5,3,1,2,4,5,0,0,185,5,0,2,136,0,0,0,63,3,1,185,4,0,3,136,205,204,204,62,3,185,2,0,134,255,255,0,0,185,2,0,133,0,1,185,3,0,50,2,185,2,1,0,185,5,1,128,210,128,200,1,1,185,2,1,128,200,185,6,255,0,1,0,1,1,185,6,1,0,0,55,0,185,3,0,2,127,185,7,1,128,250,129,244,1,128,250,129,244,1,185,6,1,11,10,22,15,5,185,4,1,33,22,63,185,6,20,4,1,8,2,0,2,255,1,0,190,190,190,190,1,185,5,189,0,189,0,190,16,16,0,3,255,255,1,190,1,190,190,190,190,190,190]).unwrap();
+
+        let mut sd2 = RnopDeserializer::deserialize::<StereoDepthProperties>(&[185, 23, 185, 7, 185, 12, 2, 2, 136, 0, 0, 122, 68, 1, 0, 0, 0, 10, 3, 0, 190, 0, 185, 11, 186, 5, 1, 3, 2, 4, 5, 7, 0, 185, 5, 1, 1, 136, 0, 0, 0, 63, 3, 1, 185, 4, 1, 3, 136, 0, 0, 0, 63, 3, 185, 2, 0, 133, 152, 58, 185, 2, 0, 133, 0, 1, 185, 3, 1, 128, 200, 2, 185, 2, 2, 0, 185, 5, 1, 100, 128, 210, 3, 1, 185, 2, 1, 128, 200, 185, 6, 255, 0, 1, 0, 1, 1, 185, 6, 1, 0, 0, 15, 0, 185, 3, 0, 2, 127, 185, 7, 1, 128, 250, 129, 244, 1, 128, 250, 129, 244, 1, 185, 6, 1, 45, 40, 49, 15, 5, 185, 4, 1, 95, 90, 99, 185, 6, 20, 10, 1, 2, 5, 0, 2, 255, 1, 0, 190, 190, 190, 190, 1, 185, 5, 189, 0, 189, 0, 190, 16, 16, 0, 3, 3, 3, 1, 190, 1, 190, 190, 190, 190, 190, 190]).unwrap();
+
+        sd2.initial_config.algorithm_control = Default::default();
+        sd2.initial_config.algorithm_control.depth_align = DepthAlign::RectifiedRight;
+        sd2.initial_config.algorithm_control.enable_extended = true;
+        sd2.initial_config.post_processing = Default::default();
+        sd2.initial_config.cost_matching = Default::default();
+        sd2.initial_config.cost_aggregation = Default::default();
+        sd2.initial_config.confidence_metrics = Default::default();
+        sd2.post_processing_shaves = -1;
+        sd2.post_processing_memory_slices = -1;
+
+        assert_eq!(sd1, sd2);
+
+        /*
+            [2,{"alias":"","deviceId":"19443010A1A1872D00","deviceNode":true,"id":2,"ioInfo":[[["dynamicOutputs","0"],{"blocking":false,"group":"dynamicOutputs","id":14,"name":"0","queueSize":8,"type":0,"waitForMessage":false}],[["","pipelineEventOutput"],{"blocking":false,"group":"","id":12,"name":"pipelineEventOutput","queueSize":8,"type":0,"waitForMessage":false}],[["","raw"],{"blocking":false,"group":"","id":13,"name":"raw","queueSize":8,"type":0,"waitForMessage":false}],[["","mockIsp"],{"blocking":true,"group":"","id":11,"name":"mockIsp","queueSize":8,"type":3,"waitForMessage":false}],[["","inputControl"],{"blocking":true,"group":"","id":10,"name":"inputControl","queueSize":3,"type":3,"waitForMessage":false}]],"logLevel":0,"name":"Camera","parentId":-1,"properties":[185,22,185,33,0,3,0,136,0,0,0,0,104,100,185,3,0,129,225,2,0,185,5,129,176,179,129,191,90,129,195,94,0,130,32,59,128,156,185,5,129,90,120,0,0,0,0,0,0,0,0,0,0,0,0,255,185,3,0,112,132,161,185,3,133,195,94,3,0,130,102,111,118,0,0,0,0,0,0,0,0,0,0,128,161,0,186,0,2,255,189,0,255,255,255,255,255,136,0,0,128,191,136,0,0,128,191,0,3,134,0,0,160,0,3,134,0,0,160,0,4,4,4,190,190,186,1,185,6,185,1,184,0,186,2,129,128,2,129,144,1,185,1,184,0,136,0,0,200,65,190,0,190,0]}],
+
+            [1,{"alias":"","deviceId":"19443010A1A1872D00","deviceNode":true,"id":1,"ioInfo":[[["dynamicOutputs","0"],{"blocking":false,"group":"dynamicOutputs","id":9,"name":"0","queueSize":8,"type":0,"waitForMessage":false}],[["","pipelineEventOutput"],{"blocking":false,"group":"","id":7,"name":"pipelineEventOutput","queueSize":8,"type":0,"waitForMessage":false}],[["","raw"],{"blocking":false,"group":"","id":8,"name":"raw","queueSize":8,"type":0,"waitForMessage":false}],[["","mockIsp"],{"blocking":true,"group":"","id":6,"name":"mockIsp","queueSize":8,"type":3,"waitForMessage":false}],[["","inputControl"],{"blocking":true,"group":"","id":5,"name":"inputControl","queueSize":3,"type":3,"waitForMessage":false}]],"logLevel":0,"name":"Camera","parentId":-1,"properties":[185,22,185,33,0,3,0,136,0,0,0,0,64,13,185,3,129,195,94,130,224,12,158,92,129,195,94,185,5,129,176,12,129,158,92,129,195,94,0,3,185,5,0,0,129,104,100,114,0,0,0,0,0,0,0,0,0,255,185,3,0,0,0,185,3,0,0,0,96,0,0,96,0,0,0,0,0,112,128,195,0,186,0,1,255,189,0,255,255,255,255,255,136,0,0,128,191,136,0,0,128,191,0,3,134,0,0,160,0,3,134,0,0,160,0,4,4,4,190,190,186,1,185,6,185,1,184,0,186,2,129,128,2,129,144,1,185,1,184,0,136,0,0,200,65,190,0,190,0]}],
+
+            [0,{"alias":"","deviceId":"19443010A1A1872D00","deviceNode":true,"id":0,"ioInfo":[[["dynamicOutputs","0"],{"blocking":false,"group":"dynamicOutputs","id":4,"name":"0","queueSize":8,"type":0,"waitForMessage":false}],[["","pipelineEventOutput"],{"blocking":false,"group":"","id":2,"name":"pipelineEventOutput","queueSize":8,"type":0,"waitForMessage":false}],[["","raw"],{"blocking":false,"group":"","id":3,"name":"raw","queueSize":8,"type":0,"waitForMessage":false}],[["","mockIsp"],{"blocking":true,"group":"","id":1,"name":"mockIsp","queueSize":8,"type":3,"waitForMessage":false}],[["","inputControl"],{"blocking":true,"group":"","id":0,"name":"inputControl","queueSize":3,"type":3,"waitForMessage":false}]],"logLevel":0,"name":"Camera","parentId":-1,"properties":[185,22,185,33,0,3,0,136,0,0,0,0,128,255,128,255,185,3,130,255,255,255,255,1,0,185,5,0,0,0,0,130,52,1,3,0,185,5,38,0,0,0,130,91,16,3,0,0,0,0,0,0,0,108,128,193,255,185,3,13,0,0,185,3,134,163,15,3,0,0,130,241,38,4,0,0,0,0,0,0,0,0,0,0,0,0,0,186,0,0,255,189,0,255,255,255,255,255,136,0,0,128,191,136,0,0,128,191,0,3,134,0,0,160,0,3,134,0,0,160,0,4,4,4,190,190,186,1,185,6,185,1,184,0,186,2,129,0,5,129,192,3,185,1,184,0,136,0,0,200,65,22,0,1,0]}]
+
+
+       */
+        /*
+            (2, NodeObjInfo { id: 2, parent_id: -1, name: "Camera", alias: "", device_id: "test", device_node: true, properties: [185, 22, 185, 33, 0, 3, 0, 136, 0, 0, 0, 0, 0, 0, 185, 3, 0, 0, 0, 185, 5, 129, 48, 191, 129, 239, 123, 129, 89, 94, 0, 3, 185, 5, 0, 0, 129, 102, 111, 118, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 185, 3, 0, 0, 0, 185, 3, 0, 0, 0, 0, 0, 0, 132, 129, 2, 0, 0, 0, 0, 128, 176, 4, 0, 186, 0, 2, 255, 189, 0, 255, 255, 255, 255, 255, 136, 0, 0, 128, 191, 136, 0, 0, 128, 191, 0, 3, 134, 0, 0, 160, 0, 3, 134, 0, 0, 160, 0, 4, 4, 4, 190, 190, 186, 1, 185, 6, 185, 1, 184, 0, 186, 2, 129, 128, 2, 129, 224, 1, 185, 1, 184, 0, 136, 0, 0, 112, 65, 190, 0, 190, 0], log_level: Off, io_info: [(("dynamicOutputs", "0"), NodeIoInfo { group: "dynamicOutputs", name: "0", ty: MSender, blocking: false, queue_size: 8, wait_for_message: false, id: 24 }), (("", "raw"), NodeIoInfo { group: "", name: "raw", ty: MSender, blocking: false, queue_size: 8, wait_for_message: false, id: 23 }), (("", "inputControl"), NodeIoInfo { group: "", name: "inputControl", ty: SReceiver, blocking: true, queue_size: 8, wait_for_message: false, id: 21 }), (("", "mockIsp"), NodeIoInfo { group: "", name: "mockIsp", ty: SReceiver, blocking: true, queue_size: 8, wait_for_message: false, id: 22 })] }),
+            (1, NodeObjInfo { id: 1, parent_id: -1, name: "Camera", alias: "", device_id: "test", device_node: true, properties: [185, 22, 185, 33, 0, 3, 0, 136, 0, 0, 0, 0, 0, 0, 185, 3, 0, 0, 0, 185, 5, 0, 0, 0, 0, 0, 185, 5, 129, 178, 68, 0, 0, 0, 129, 178, 68, 0, 0, 0, 0, 0, 0, 27, 128, 146, 35, 185, 3, 0, 0, 0, 185, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 186, 0, 1, 255, 189, 0, 255, 255, 255, 255, 255, 136, 0, 0, 128, 191, 136, 0, 0, 128, 191, 0, 3, 134, 0, 0, 160, 0, 3, 134, 0, 0, 160, 0, 4, 4, 4, 190, 190, 186, 1, 185, 6, 185, 1, 184, 0, 186, 2, 129, 128, 2, 129, 224, 1, 185, 1, 184, 0, 136, 0, 0, 112, 65, 190, 0, 190, 0], log_level: Off, io_info: [(("dynamicOutputs", "0"), NodeIoInfo { group: "dynamicOutputs", name: "0", ty: MSender, blocking: false, queue_size: 8, wait_for_message: false, id: 20 }), (("", "inputControl"), NodeIoInfo { group: "", name: "inputControl", ty: SReceiver, blocking: true, queue_size: 8, wait_for_message: false, id: 17 }), (("", "raw"), NodeIoInfo { group: "", name: "raw", ty: MSender, blocking: false, queue_size: 8, wait_for_message: false, id: 19 }), (("", "mockIsp"), NodeIoInfo { group: "", name: "mockIsp", ty: SReceiver, blocking: true, queue_size: 8, wait_for_message: false, id: 18 })] }),
+            (0, NodeObjInfo { id: 0, parent_id: -1, name: "Camera", alias: "", device_id: "test", device_node: true, properties: [185, 22, 185, 33, 0, 3, 0, 136, 0, 0, 0, 0, 0, 0, 185, 3, 0, 0, 0, 185, 5, 0, 0, 0, 0, 0, 185, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 185, 3, 0, 0, 0, 185, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 186, 0, 0, 255, 189, 0, 255, 255, 255, 255, 255, 136, 0, 0, 128, 191, 136, 0, 0, 128, 191, 0, 3, 134, 0, 0, 160, 0, 3, 134, 0, 0, 160, 0, 4, 4, 4, 190, 190, 186, 1, 185, 6, 185, 1, 184, 0, 186, 2, 129, 128, 2, 129, 224, 1, 185, 1, 184, 0, 136, 0, 0, 112, 65, 9, 0, 190, 0], log_level: Off, io_info: [(("dynamicOutputs", "0"), NodeIoInfo { group: "dynamicOutputs", name: "0", ty: MSender, blocking: false, queue_size: 8, wait_for_message: false, id: 33 }), (("", "raw"), NodeIoInfo { group: "", name: "raw", ty: MSender, blocking: false, queue_size: 8, wait_for_message: false, id: 32 }), (("", "mockIsp"), NodeIoInfo { group: "", name: "mockIsp", ty: SReceiver, blocking: true, queue_size: 8, wait_for_message: false, id: 31 }), (("", "inputControl"), NodeIoInfo { group: "", name: "inputControl", ty: SReceiver, blocking: true, queue_size: 8, wait_for_message: false, id: 30 })] })
+       */
+
+        let c1 = RnopDeserializer::deserialize::<CameraProperties>(&[185,22,185,33,0,3,0,136,0,0,0,0,104,100,185,3,0,129,225,2,0,185,5,129,176,179,129,191,90,129,195,94,0,130,32,59,128,156,185,5,129,90,120,0,0,0,0,0,0,0,0,0,0,0,0,255,185,3,0,112,132,161,185,3,133,195,94,3,0,130,102,111,118,0,0,0,0,0,0,0,0,0,0,128,161,0,186,0,2,255,189,0,255,255,255,255,255,136,0,0,128,191,136,0,0,128,191,0,3,134,0,0,160,0,3,134,0,0,160,0,4,4,4,190,190,186,1,185,6,185,1,184,0,186,2,129,128,2,129,144,1,185,1,184,0,136,0,0,200,65,190,0,190,0]).unwrap();
+        let mut c1a = RnopDeserializer::deserialize::<CameraProperties>(&[185, 22, 185, 33, 0, 3, 0, 136, 0, 0, 0, 0, 0, 0, 185, 3, 0, 0, 0, 185, 5, 129, 48, 191, 129, 239, 123, 129, 89, 94, 0, 3, 185, 5, 0, 0, 129, 102, 111, 118, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 185, 3, 0, 0, 0, 185, 3, 0, 0, 0, 0, 0, 0, 132, 129, 2, 0, 0, 0, 0, 128, 176, 4, 0, 186, 0, 2, 255, 189, 0, 255, 255, 255, 255, 255, 136, 0, 0, 128, 191, 136, 0, 0, 128, 191, 0, 3, 134, 0, 0, 160, 0, 3, 134, 0, 0, 160, 0, 4, 4, 4, 190, 190, 186, 1, 185, 6, 185, 1, 184, 0, 186, 2, 129, 128, 2, 129, 224, 1, 185, 1, 184, 0, 136, 0, 0, 112, 65, 190, 0, 190, 0]).unwrap();
+
+        c1a.initial_control.lens_pos_auto_infinity = 104;
+        c1a.initial_control.lens_pos_auto_macro = 100;
+        c1a.initial_control.exp_manual.sensitivity_iso = 737;
+        // x: 46000, y: 23231, width: 24259, height: 0, priority: 2625649440
+        c1a.initial_control.ae_region.x = 46000;
+        c1a.initial_control.ae_region.y = 23231;
+        c1a.initial_control.ae_region.width = 24259;
+        c1a.initial_control.ae_region.priority = 2625649440;
+        //x: 30810, y: 0, width: 0, height: 0, priority: 0
+        c1a.initial_control.af_region = RegionParams {
+            x: 30810,
+            ..Default::default()
+        };
+        c1a.initial_control.frame_sync_mode = -1;
+        c1a.initial_control.strobe_config.active_level = 112;
+        c1a.initial_control.strobe_config.gpio_number = -95;
+
+        // exposure_begin_offset_us: 24259, exposure_end_offset_us: 3, duration_us: 0
+        c1a.initial_control.strobe_timings.exposure_begin_offset_us = 24259;
+        c1a.initial_control.strobe_timings.exposure_end_offset_us = 3;
+
+        c1a.initial_control.ae_max_exposure_time_us = 7761766;
+
+        c1a.initial_control.brightness = 0;
+        c1a.initial_control.contrast = 0;
+        c1a.initial_control.saturation = 0;
+
+        c1a.initial_control.low_power_frame_burst = 0;
+        c1a.initial_control.low_power_frame_discard = 161;
+
+        c1a.output_requests.get_mut(0).unwrap().fps = Capability::new_single(25.);
+        c1a.output_requests.get_mut(0).unwrap().size = Capability::new_single((640, 400));
+
+        assert_eq!(c1, c1a);
+        assert_eq!(c1.board_socket, crate::rpc::CameraBoardSocket::C);
+
+        let c2 = RnopDeserializer::deserialize::<CameraProperties>(&[185,22,185,33,0,3,0,136,0,0,0,0,64,13,185,3,129,195,94,130,224,12,158,92,129,195,94,185,5,129,176,12,129,158,92,129,195,94,0,3,185,5,0,0,129,104,100,114,0,0,0,0,0,0,0,0,0,255,185,3,0,0,0,185,3,0,0,0,96,0,0,96,0,0,0,0,0,112,128,195,0,186,0,1,255,189,0,255,255,255,255,255,136,0,0,128,191,136,0,0,128,191,0,3,134,0,0,160,0,3,134,0,0,160,0,4,4,4,190,190,186,1,185,6,185,1,184,0,186,2,129,128,2,129,144,1,185,1,184,0,136,0,0,200,65,190,0,190,0]).unwrap();
+        let mut c2a = RnopDeserializer::deserialize::<CameraProperties>(&[185, 22, 185, 33, 0, 3, 0, 136, 0, 0, 0, 0, 0, 0, 185, 3, 0, 0, 0, 185, 5, 0, 0, 0, 0, 0, 185, 5, 129, 178, 68, 0, 0, 0, 129, 178, 68, 0, 0, 0, 0, 0, 0, 27, 128, 146, 35, 185, 3, 0, 0, 0, 185, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 186, 0, 1, 255, 189, 0, 255, 255, 255, 255, 255, 136, 0, 0, 128, 191, 136, 0, 0, 128, 191, 0, 3, 134, 0, 0, 160, 0, 3, 134, 0, 0, 160, 0, 4, 4, 4, 190, 190, 186, 1, 185, 6, 185, 1, 184, 0, 186, 2, 129, 128, 2, 129, 224, 1, 185, 1, 184, 0, 136, 0, 0, 112, 65, 190, 0, 190, 0]).unwrap();
+
+        c2a.initial_control.lens_pos_auto_infinity = 64;
+        c2a.initial_control.lens_pos_auto_macro = 13;
+        c2a.initial_control.exp_manual.exposure_time_us = 24259;
+        c2a.initial_control.exp_manual.sensitivity_iso = 1553861856;
+        c2a.initial_control.exp_manual.frame_duration_us = 24259;
+        c2a.initial_control.ae_region = RegionParams {
+            x: 3248,
+            y: 23710,
+            width: 24259,
+            priority: 3,
+            ..Default::default()
+        };
+
+        c2a.initial_control.af_region = RegionParams {
+            width: 25704,
+            height: 114,
+            ..Default::default()
+        };
+        c2a.initial_control.control_mode = 0;
+        c2a.initial_control.effect_mode = 0;
+        c2a.initial_control.frame_sync_mode = -1;
+        c2a.initial_control.ae_max_exposure_time_us = 96;
+        c2a.initial_control.contrast = 96;
+        c2a.initial_control.low_power_frame_burst = 112;
+        c2a.initial_control.low_power_frame_discard = 195;
+
+        c2a.output_requests.get_mut(0).unwrap().fps = Capability::new_single(25.);
+        c2a.output_requests.get_mut(0).unwrap().size = Capability::new_single((640, 400));
+
+
+        assert_eq!(c2, c2a);
+        assert_eq!(c2.board_socket, crate::rpc::CameraBoardSocket::B);
+
+        let c3 = RnopDeserializer::deserialize::<CameraProperties>(&[185,22,185,33,0,3,0,136,0,0,0,0,128,255,128,255,185,3,130,255,255,255,255,1,0,185,5,0,0,0,0,130,52,1,3,0,185,5,38,0,0,0,130,91,16,3,0,0,0,0,0,0,0,108,128,193,255,185,3,13,0,0,185,3,134,163,15,3,0,0,130,241,38,4,0,0,0,0,0,0,0,0,0,0,0,0,0,186,0,0,255,189,0,255,255,255,255,255,136,0,0,128,191,136,0,0,128,191,0,3,134,0,0,160,0,3,134,0,0,160,0,4,4,4,190,190,186,1,185,6,185,1,184,0,186,2,129,0,5,129,192,3,185,1,184,0,136,0,0,200,65,22,0,1,0]).unwrap();
+        let mut c3a = RnopDeserializer::deserialize::<CameraProperties>(&[185, 22, 185, 33, 0, 3, 0, 136, 0, 0, 0, 0, 0, 0, 185, 3, 0, 0, 0, 185, 5, 0, 0, 0, 0, 0, 185, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 185, 3, 0, 0, 0, 185, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 186, 0, 0, 255, 189, 0, 255, 255, 255, 255, 255, 136, 0, 0, 128, 191, 136, 0, 0, 128, 191, 0, 3, 134, 0, 0, 160, 0, 3, 134, 0, 0, 160, 0, 4, 4, 4, 190, 190, 186, 1, 185, 6, 185, 1, 184, 0, 186, 2, 129, 128, 2, 129, 224, 1, 185, 1, 184, 0, 136, 0, 0, 112, 65, 9, 0, 190, 0]).unwrap();
+
+        c3a.initial_control.lens_pos_auto_infinity = 255;
+        c3a.initial_control.lens_pos_auto_macro = 255;
+
+        c3a.initial_control.exp_manual = ManualExposureParams {
+            exposure_time_us: 4294967295,
+            sensitivity_iso: 1,
+            ..Default::default()
+        };
+        c3a.initial_control.ae_region.priority = 196916;
+
+        c3a.initial_control.af_region.priority = 200795;
+        c3a.initial_control.af_region.x = 38;
+
+        c3a.initial_control.control_mode = 108;
+        c3a.initial_control.effect_mode = 193;
+        c3a.initial_control.frame_sync_mode = -1;
+        
+        c3a.initial_control.strobe_config.enable = 13;
+        c3a.initial_control.strobe_timings.exposure_begin_offset_us= 200611;
+        c3a.initial_control.strobe_timings.duration_us= 272113;
+
+        c3a.output_requests.get_mut(0).unwrap().fps = Capability::new_single(25.);
+        c3a.output_requests.get_mut(0).unwrap().size = Capability::new_single((1280, 960));
+        c3a.output_requests.get_mut(0).unwrap().ty = Some(FrameType::Nv12);
+        c3a.output_requests.get_mut(0).unwrap().enable_undistortion = Some(true);
+
+        assert_eq!(c3, c3a);
+        assert_eq!(c3.board_socket, crate::rpc::CameraBoardSocket::A);
+
+        let p = RnopDeserializer::deserialize::<PointcloudProperties>(&[185,2,185,10,0,185,2,0,0,185,2,0,0,0,186,4,186,4,136,0,0,128,63,136,0,0,0,0,136,0,0,0,0,136,0,0,0,0,186,4,136,0,0,0,0,136,0,0,128,63,136,0,0,0,0,136,0,0,0,0,186,4,136,0,0,0,0,136,0,0,0,0,136,0,0,128,63,136,0,0,0,0,186,4,136,0,0,0,0,136,0,0,0,0,136,0,0,0,0,136,0,0,128,63,0,0,255,255,1,4]).unwrap();
+
+        let p2 = RnopDeserializer::deserialize::<PointcloudProperties>(&[185, 2, 185, 10, 0, 185, 2, 0, 0, 185, 2, 0, 0, 0, 186, 4, 186, 4, 136, 0, 0, 128, 63, 136, 0, 0, 0, 0, 136, 0, 0, 0, 0, 136, 0, 0, 0, 0, 186, 4, 136, 0, 0, 0, 0, 136, 0, 0, 128, 63, 136, 0, 0, 0, 0, 136, 0, 0, 0, 0, 186, 4, 136, 0, 0, 0, 0, 136, 0, 0, 0, 0, 136, 0, 0, 128, 63, 136, 0, 0, 0, 0, 186, 4, 136, 0, 0, 0, 0, 136, 0, 0, 0, 0, 136, 0, 0, 0, 0, 136, 0, 0, 128, 63, 2, 0, 255, 255, 1, 4]).unwrap();
+
+        //assert_eq!(p, p2);
+    }
 }
 
 mod rpc {
@@ -7494,7 +8672,9 @@ mod rpc {
             let ev = Event::write(self.inner.write.id, b"", &data);
 
             self.inner.write(ev, data).await;
-            let mut bytes = std::io::Cursor::new(self.inner.read().await);
+
+            let bytes = self.inner.read().await;
+            let mut bytes = std::io::Cursor::new(bytes);
             let res = rmpv::decode::read_value(&mut bytes).unwrap();
 
             let rmpv::Value::Array(mut items) = res else {
@@ -7528,8 +8708,8 @@ mod rpc {
             self.call_untyped(method, params).await.map(|o| serde_rmpv::from_value(&o).unwrap()).map_err(|e| serde_rmpv::from_value(&e).unwrap())
         }
 
-        pub async fn is_running(&mut self) -> bool {
-            self.call::<_, String>("isRunning", [].into_iter()).await.unwrap()
+        pub async fn is_running(&mut self) -> Result<rmpv::Value, rmpv::Value> {
+            self.call_untyped("isRunning", [].into_iter()).await
         }
 
         pub async fn enable_crash_dump(&mut self, enable: bool) -> Result<(), String>{
@@ -7754,12 +8934,19 @@ mod rpc {
         }
 
         fn parse_calibration(val: rmpv::Value) -> EepromData {
+            //println!("{val:?}");
+            /*
             let rmpv::Value::Array(mut items) = val else {
                 panic!();
             };
+            */
 
+            let (_, _, (_, _, data)) = serde_rmpv::from_value::<(bool, String, (bool, String, EepromData))>(&val).unwrap();
+            data
+                /*
             let [_, _, data]: [rmpv::Value; 3] = items.try_into().unwrap();
             serde_rmpv::from_value(&data).unwrap()
+            */
         }
 
         pub async fn set_pipeline_schema(&mut self, schema: PipelineSchema) -> Result<rmpv::Value, rmpv::Value> {
@@ -7970,7 +9157,7 @@ mod rpc {
         #[serde(rename = "imuExtrinsics")]
         pub(crate) imu_extrinsics: Extrinsics,
         #[serde(rename = "housingExtrinsics")]
-        pub(crate) housing_extrinsisc: Extrinsics,
+        pub(crate) housing_extrinsics: Extrinsics,
         #[serde(rename = "miscellaneousData")]
         pub(crate) misc_data: Vec<u8>,
         #[serde(rename = "stereoUseSpecTranslation")]
@@ -7979,6 +9166,74 @@ mod rpc {
         pub(crate) stereo_enable_distortion_correction: bool,
         #[serde(rename = "verticalCameraSocket")]
         pub(crate) vertical_camera_socket: CameraBoardSocket,
+        #[serde(rename = "imuCalibrationParams")]
+        pub(crate) imu_calibration_params: ImuCalibrationParams,
+    }
+
+    #[derive(serde::Deserialize, serde::Serialize, Debug, Default)]
+    struct AccelAxisNoiseParams {
+        #[serde(rename = "noiseDensity")]
+        noise_density: f32,
+        #[serde(rename = "randomWalk")]
+        random_walk: f32,
+        #[serde(rename = "biasStability")]
+        bias_stability: f32,
+    }
+
+    #[derive(serde::Deserialize, serde::Serialize, Debug, Default)]
+    struct AccelerometerNoiseParams {
+        x: AccelAxisNoiseParams,
+        y: AccelAxisNoiseParams,
+        z: AccelAxisNoiseParams,
+    }
+
+    #[derive(serde::Deserialize, serde::Serialize, Debug, Default)]
+    struct GyroAxisNoiseParams {
+        #[serde(rename = "noiseDensity")]
+        noise_density: f32,
+        #[serde(rename = "randomWalk")]
+        random_walk: f32,
+        #[serde(rename = "biasStability")]
+        bias_stability: f32,
+    }
+
+    #[derive(serde::Deserialize, serde::Serialize, Debug, Default)]
+    struct GyroscopeNoiseParams {
+        x: GyroAxisNoiseParams,
+        y: GyroAxisNoiseParams,
+        z: GyroAxisNoiseParams,
+    }
+
+    #[derive(serde::Deserialize, serde::Serialize, Debug, Default)]
+    struct ImuNoiseParameters {
+        name: String,
+        accelerometer: AccelerometerNoiseParams,
+        gyroscope: GyroscopeNoiseParams,
+    }
+
+    #[derive(serde::Deserialize, serde::Serialize, Debug)]
+    struct ImuCalibrationParams {
+        noise: ImuNoiseParameters,
+        accelerometer: Vec<Vec<f32>>,
+        gyroscope: Vec<Vec<f32>>,
+    }
+
+    impl core::default::Default for ImuCalibrationParams {
+        fn default() -> Self {
+            Self {
+                noise: Default::default(),
+                accelerometer: vec![
+                    vec![1., 0., 0., 0.],
+                    vec![0., 1., 0., 0.],
+                    vec![0., 0., 1., 0.],
+                ],
+                gyroscope: vec![
+                    vec![1., 0., 0., 0.],
+                    vec![0., 1., 0., 0.],
+                    vec![0., 0., 1., 0.],
+                ],
+            }
+        }
     }
 
     #[derive(serde::Deserialize, serde::Serialize, Debug)]
@@ -8019,7 +9274,7 @@ mod rpc {
         RadialDivision = 3,
     }
 
-    #[derive(serde::Deserialize, serde::Serialize, Debug)]
+    #[derive(serde::Deserialize, serde::Serialize, Debug, PartialEq)]
     pub struct Extrinsics {
         #[serde(rename = "rotationMatrix")]
         pub(crate) rotation_mtx: Vec<Vec<f32>>,
@@ -8028,9 +9283,34 @@ mod rpc {
         pub(crate) spec_translation: Point3f,
         #[serde(rename = "toCameraSocket")]
         pub(crate) to_camera_socket: CameraBoardSocket,
+        #[serde(rename = "lengthUnit")]
+        pub(crate) length_unit: crate::pipeline::LengthUnit,
+    }
+    
+    impl Extrinsics {
+        pub fn transformation_matrix(&self, use_spec_translation: bool, length_unit: crate::pipeline::LengthUnit) -> Option<nalgebra::Matrix4<f32>> {
+            let r1 = self.rotation_mtx.get(0)?;
+            let r2 = self.rotation_mtx.get(1)?;
+            let r3 = self.rotation_mtx.get(2)?;
+
+            let translation = if use_spec_translation {
+                &self.spec_translation
+            } else {
+                &self.translation
+            };
+
+            let scale = length_unit.unit_multiplier();
+
+            Some(nalgebra::Matrix4::new(
+                *r1.get(0)?, *r1.get(1)?, *r1.get(2)?, translation.x * scale,
+                *r2.get(0)?, *r2.get(1)?, *r2.get(2)?, translation.y * scale,
+                *r3.get(0)?, *r3.get(1)?, *r3.get(2)?, translation.z * scale,
+                0., 0., 0., 1.
+            ))
+        }
     }
 
-    #[derive(serde::Deserialize, serde::Serialize, Debug)]
+    #[derive(serde::Deserialize, serde::Serialize, Debug, PartialEq)]
     pub struct Point3f {
         pub x: f32,
         pub y: f32,
@@ -8259,6 +9539,28 @@ mod rpc {
         SReceiver = 3,
     }
     // end of pipeline
+
+
+    #[test]
+    fn eeprom_data_parse() {
+        let mut bytes = vec![148, 1, 2, 1, 147, 195, 160, 147, 195, 160, 222, 0, 20, 169, 98, 97, 116, 99, 104, 78, 97, 109, 101, 160, 169, 98, 97, 116, 99, 104, 84, 105, 109, 101, 206, 103, 227, 190, 133, 169, 98, 111, 97, 114, 100, 67, 111, 110, 102, 173, 110, 73, 82, 45, 67, 51, 48, 77, 48, 48, 45, 48, 48, 171, 98, 111, 97, 114, 100, 67, 117, 115, 116, 111, 109, 160, 169, 98, 111, 97, 114, 100, 78, 97, 109, 101, 166, 66, 67, 50, 48, 56, 55, 172, 98, 111, 97, 114, 100, 79, 112, 116, 105, 111, 110, 115, 205, 5, 1, 168, 98, 111, 97, 114, 100, 82, 101, 118, 166, 82, 51, 77, 49, 69, 51, 170, 99, 97, 109, 101, 114, 97, 68, 97, 116, 97, 147, 146, 2, 136, 170, 99, 97, 109, 101, 114, 97, 84, 121, 112, 101, 0, 175, 100, 105, 115, 116, 111, 114, 116, 105, 111, 110, 67, 111, 101, 102, 102, 158, 202, 63, 150, 102, 209, 202, 192, 2, 118, 163, 202, 185, 213, 244, 172, 202, 54, 85, 172, 180, 202, 187, 230, 175, 137, 202, 63, 141, 199, 113, 202, 191, 240, 192, 63, 202, 189, 197, 21, 195, 202, 0, 0, 0, 0, 202, 0, 0, 0, 0, 202, 0, 0, 0, 0, 202, 0, 0, 0, 0, 202, 186, 213, 241, 85, 202, 58, 152, 5, 206, 170, 101, 120, 116, 114, 105, 110, 115, 105, 99, 115, 133, 170, 108, 101, 110, 103, 116, 104, 85, 110, 105, 116, 1, 174, 114, 111, 116, 97, 116, 105, 111, 110, 77, 97, 116, 114, 105, 120, 147, 147, 202, 63, 127, 230, 24, 202, 186, 203, 215, 253, 202, 60, 229, 244, 128, 147, 202, 58, 203, 177, 35, 202, 63, 127, 255, 236, 202, 56, 132, 66, 168, 147, 202, 188, 229, 244, 162, 202, 183, 162, 229, 27, 202, 63, 127, 230, 45, 175, 115, 112, 101, 99, 84, 114, 97, 110, 115, 108, 97, 116, 105, 111, 110, 131, 161, 120, 202, 64, 160, 0, 0, 161, 121, 202, 0, 0, 0, 0, 161, 122, 202, 0, 0, 0, 0, 174, 116, 111, 67, 97, 109, 101, 114, 97, 83, 111, 99, 107, 101, 116, 0, 171, 116, 114, 97, 110, 115, 108, 97, 116, 105, 111, 110, 131, 161, 120, 202, 64, 162, 16, 202, 161, 121, 202, 60, 139, 16, 0, 161, 122, 202, 189, 74, 237, 222, 166, 104, 101, 105, 103, 104, 116, 205, 4, 176, 175, 105, 110, 116, 114, 105, 110, 115, 105, 99, 77, 97, 116, 114, 105, 120, 147, 147, 202, 68, 141, 161, 241, 202, 0, 0, 0, 0, 202, 68, 106, 138, 223, 147, 202, 0, 0, 0, 0, 202, 68, 141, 136, 232, 202, 68, 27, 143, 35, 147, 202, 0, 0, 0, 0, 202, 0, 0, 0, 0, 202, 63, 128, 0, 0, 172, 108, 101, 110, 115, 80, 111, 115, 105, 116, 105, 111, 110, 0, 171, 115, 112, 101, 99, 72, 102, 111, 118, 68, 101, 103, 202, 66, 154, 153, 154, 165, 119, 105, 100, 116, 104, 205, 7, 128, 146, 1, 136, 170, 99, 97, 109, 101, 114, 97, 84, 121, 112, 101, 0, 175, 100, 105, 115, 116, 111, 114, 116, 105, 111, 110, 67, 111, 101, 102, 102, 158, 202, 191, 21, 73, 41, 202, 61, 223, 1, 203, 202, 57, 105, 18, 46, 202, 185, 232, 227, 144, 202, 191, 14, 1, 233, 202, 191, 28, 202, 129, 202, 62, 65, 14, 130, 202, 191, 26, 246, 45, 202, 0, 0, 0, 0, 202, 0, 0, 0, 0, 202, 0, 0, 0, 0, 202, 0, 0, 0, 0, 202, 60, 98, 135, 127, 202, 59, 199, 97, 71, 170, 101, 120, 116, 114, 105, 110, 115, 105, 99, 115, 133, 170, 108, 101, 110, 103, 116, 104, 85, 110, 105, 116, 1, 174, 114, 111, 116, 97, 116, 105, 111, 110, 77, 97, 116, 114, 105, 120, 147, 147, 202, 63, 127, 251, 162, 202, 187, 9, 9, 1, 202, 188, 58, 7, 52, 147, 202, 59, 17, 16, 246, 202, 63, 127, 252, 6, 202, 60, 48, 204, 211, 147, 202, 60, 57, 165, 172, 202, 188, 49, 51, 57, 202, 63, 127, 247, 246, 175, 115, 112, 101, 99, 84, 114, 97, 110, 115, 108, 97, 116, 105, 111, 110, 131, 161, 120, 202, 193, 112, 0, 0, 161, 121, 202, 0, 0, 0, 0, 161, 122, 202, 0, 0, 0, 0, 174, 116, 111, 67, 97, 109, 101, 114, 97, 83, 111, 99, 107, 101, 116, 2, 171, 116, 114, 97, 110, 115, 108, 97, 116, 105, 111, 110, 131, 161, 120, 202, 193, 112, 96, 38, 161, 121, 202, 189, 3, 120, 133, 161, 122, 202, 190, 156, 167, 209, 166, 104, 101, 105, 103, 104, 116, 205, 4, 176, 175, 105, 110, 116, 114, 105, 110, 115, 105, 99, 77, 97, 116, 114, 105, 120, 147, 147, 202, 68, 143, 25, 142, 202, 0, 0, 0, 0, 202, 68, 109, 189, 118, 147, 202, 0, 0, 0, 0, 202, 68, 143, 7, 148, 202, 68, 26, 41, 163, 147, 202, 0, 0, 0, 0, 202, 0, 0, 0, 0, 202, 63, 128, 0, 0, 172, 108, 101, 110, 115, 80, 111, 115, 105, 116, 105, 111, 110, 0, 171, 115, 112, 101, 99, 72, 102, 111, 118, 68, 101, 103, 202, 66, 154, 153, 154, 165, 119, 105, 100, 116, 104, 205, 7, 128, 146, 0, 136, 170, 99, 97, 109, 101, 114, 97, 84, 121, 112, 101, 0, 175, 100, 105, 115, 116, 111, 114, 116, 105, 111, 110, 67, 111, 101, 102, 102, 158, 202, 64, 83, 58, 57, 202, 63, 22, 143, 18, 202, 183, 167, 89, 39, 202, 185, 47, 97, 223, 202, 63, 159, 204, 28, 202, 64, 78, 127, 44, 202, 63, 31, 253, 21, 202, 63, 168, 127, 66, 202, 0, 0, 0, 0, 202, 0, 0, 0, 0, 202, 0, 0, 0, 0, 202, 0, 0, 0, 0, 202, 59, 192, 226, 189, 202, 56, 195, 199, 140, 170, 101, 120, 116, 114, 105, 110, 115, 105, 99, 115, 133, 170, 108, 101, 110, 103, 116, 104, 85, 110, 105, 116, 1, 174, 114, 111, 116, 97, 116, 105, 111, 110, 77, 97, 116, 114, 105, 120, 147, 147, 202, 0, 0, 0, 0, 202, 0, 0, 0, 0, 202, 0, 0, 0, 0, 147, 202, 0, 0, 0, 0, 202, 0, 0, 0, 0, 202, 0, 0, 0, 0, 147, 202, 0, 0, 0, 0, 202, 0, 0, 0, 0, 202, 0, 0, 0, 0, 175, 115, 112, 101, 99, 84, 114, 97, 110, 115, 108, 97, 116, 105, 111, 110, 131, 161, 120, 202, 128, 0, 0, 0, 161, 121, 202, 128, 0, 0, 0, 161, 122, 202, 128, 0, 0, 0, 174, 116, 111, 67, 97, 109, 101, 114, 97, 83, 111, 99, 107, 101, 116, 255, 171, 116, 114, 97, 110, 115, 108, 97, 116, 105, 111, 110, 131, 161, 120, 202, 0, 0, 0, 0, 161, 121, 202, 0, 0, 0, 0, 161, 122, 202, 0, 0, 0, 0, 166, 104, 101, 105, 103, 104, 116, 205, 4, 176, 175, 105, 110, 116, 114, 105, 110, 115, 105, 99, 77, 97, 116, 114, 105, 120, 147, 147, 202, 68, 141, 104, 224, 202, 0, 0, 0, 0, 202, 68, 106, 134, 158, 147, 202, 0, 0, 0, 0, 202, 68, 141, 78, 4, 202, 68, 27, 180, 255, 147, 202, 0, 0, 0, 0, 202, 0, 0, 0, 0, 202, 63, 128, 0, 0, 172, 108, 101, 110, 115, 80, 111, 115, 105, 116, 105, 111, 110, 0, 171, 115, 112, 101, 99, 72, 102, 111, 118, 68, 101, 103, 202, 66, 154, 153, 154, 165, 119, 105, 100, 116, 104, 205, 7, 128, 170, 100, 101, 118, 105, 99, 101, 78, 97, 109, 101, 160, 172, 104, 97, 114, 100, 119, 97, 114, 101, 67, 111, 110, 102, 173, 70, 49, 45, 70, 86, 48, 52, 45, 66, 67, 48, 48, 48, 177, 104, 111, 117, 115, 105, 110, 103, 69, 120, 116, 114, 105, 110, 115, 105, 99, 115, 133, 170, 108, 101, 110, 103, 116, 104, 85, 110, 105, 116, 1, 174, 114, 111, 116, 97, 116, 105, 111, 110, 77, 97, 116, 114, 105, 120, 147, 147, 202, 63, 127, 241, 20, 202, 188, 63, 93, 255, 202, 188, 146, 71, 141, 147, 202, 60, 67, 92, 105, 202, 63, 127, 245, 70, 202, 60, 94, 237, 3, 147, 202, 60, 144, 244, 35, 202, 188, 98, 93, 15, 202, 63, 127, 239, 124, 175, 115, 112, 101, 99, 84, 114, 97, 110, 115, 108, 97, 116, 105, 111, 110, 131, 161, 120, 202, 0, 0, 0, 0, 161, 121, 202, 0, 0, 0, 0, 161, 122, 202, 0, 0, 0, 0, 174, 116, 111, 67, 97, 109, 101, 114, 97, 83, 111, 99, 107, 101, 116, 0, 171, 116, 114, 97, 110, 115, 108, 97, 116, 105, 111, 110, 131, 161, 120, 202, 0, 0, 0, 0, 161, 121, 202, 0, 0, 0, 0, 161, 122, 202, 0, 0, 0, 0, 180, 105, 109, 117, 67, 97, 108, 105, 98, 114, 97, 116, 105, 111, 110, 80, 97, 114, 97, 109, 115, 131, 173, 97, 99, 99, 101, 108, 101, 114, 111, 109, 101, 116, 101, 114, 147, 148, 202, 63, 128, 0, 0, 202, 0, 0, 0, 0, 202, 0, 0, 0, 0, 202, 0, 0, 0, 0, 148, 202, 0, 0, 0, 0, 202, 63, 128, 0, 0, 202, 0, 0, 0, 0, 202, 0, 0, 0, 0, 148, 202, 0, 0, 0, 0, 202, 0, 0, 0, 0, 202, 63, 128, 0, 0, 202, 0, 0, 0, 0, 169, 103, 121, 114, 111, 115, 99, 111, 112, 101, 147, 148, 202, 63, 128, 0, 0, 202, 0, 0, 0, 0, 202, 0, 0, 0, 0, 202, 0, 0, 0, 0, 148, 202, 0, 0, 0, 0, 202, 63, 128, 0, 0, 202, 0, 0, 0, 0, 202, 0, 0, 0, 0, 148, 202, 0, 0, 0, 0, 202, 0, 0, 0, 0, 202, 63, 128, 0, 0, 202, 0, 0, 0, 0, 165, 110, 111, 105, 115, 101, 131, 173, 97, 99, 99, 101, 108, 101, 114, 111, 109, 101, 116, 101, 114, 131, 161, 120, 131, 173, 98, 105, 97, 115, 83, 116, 97, 98, 105, 108, 105, 116, 121, 202, 61, 30, 110, 48, 172, 110, 111, 105, 115, 101, 68, 101, 110, 115, 105, 116, 121, 202, 61, 141, 205, 228, 170, 114, 97, 110, 100, 111, 109, 87, 97, 108, 107, 202, 56, 65, 126, 203, 161, 121, 131, 173, 98, 105, 97, 115, 83, 116, 97, 98, 105, 108, 105, 116, 121, 202, 61, 111, 248, 76, 172, 110, 111, 105, 115, 101, 68, 101, 110, 115, 105, 116, 121, 202, 61, 151, 251, 13, 170, 114, 97, 110, 100, 111, 109, 87, 97, 108, 107, 202, 56, 211, 18, 127, 161, 122, 131, 173, 98, 105, 97, 115, 83, 116, 97, 98, 105, 108, 105, 116, 121, 202, 61, 71, 135, 160, 172, 110, 111, 105, 115, 101, 68, 101, 110, 115, 105, 116, 121, 202, 61, 174, 125, 115, 170, 114, 97, 110, 100, 111, 109, 87, 97, 108, 107, 202, 56, 23, 37, 191, 169, 103, 121, 114, 111, 115, 99, 111, 112, 101, 131, 161, 120, 131, 173, 98, 105, 97, 115, 83, 116, 97, 98, 105, 108, 105, 116, 121, 202, 64, 127, 233, 184, 172, 110, 111, 105, 115, 101, 68, 101, 110, 115, 105, 116, 121, 202, 62, 238, 47, 101, 170, 114, 97, 110, 100, 111, 109, 87, 97, 108, 107, 202, 61, 73, 125, 48, 161, 121, 131, 173, 98, 105, 97, 115, 83, 116, 97, 98, 105, 108, 105, 116, 121, 202, 64, 169, 14, 48, 172, 110, 111, 105, 115, 101, 68, 101, 110, 115, 105, 116, 121, 202, 63, 22, 5, 137, 170, 114, 97, 110, 100, 111, 109, 87, 97, 108, 107, 202, 61, 201, 2, 223, 161, 122, 131, 173, 98, 105, 97, 115, 83, 116, 97, 98, 105, 108, 105, 116, 121, 202, 64, 140, 103, 243, 172, 110, 111, 105, 115, 101, 68, 101, 110, 115, 105, 116, 121, 202, 62, 200, 8, 223, 170, 114, 97, 110, 100, 111, 109, 87, 97, 108, 107, 202, 61, 121, 198, 97, 164, 110, 97, 109, 101, 166, 66, 78, 79, 48, 56, 54, 173, 105, 109, 117, 69, 120, 116, 114, 105, 110, 115, 105, 99, 115, 133, 170, 108, 101, 110, 103, 116, 104, 85, 110, 105, 116, 1, 174, 114, 111, 116, 97, 116, 105, 111, 110, 77, 97, 116, 114, 105, 120, 147, 147, 202, 0, 0, 0, 0, 202, 0, 0, 0, 0, 202, 0, 0, 0, 0, 147, 202, 0, 0, 0, 0, 202, 0, 0, 0, 0, 202, 0, 0, 0, 0, 147, 202, 0, 0, 0, 0, 202, 0, 0, 0, 0, 202, 0, 0, 0, 0, 175, 115, 112, 101, 99, 84, 114, 97, 110, 115, 108, 97, 116, 105, 111, 110, 131, 161, 120, 202, 0, 0, 0, 0, 161, 121, 202, 0, 0, 0, 0, 161, 122, 202, 0, 0, 0, 0, 174, 116, 111, 67, 97, 109, 101, 114, 97, 83, 111, 99, 107, 101, 116, 255, 171, 116, 114, 97, 110, 115, 108, 97, 116, 105, 111, 110, 131, 161, 120, 202, 0, 0, 0, 0, 161, 121, 202, 0, 0, 0, 0, 161, 122, 202, 0, 0, 0, 0, 177, 109, 105, 115, 99, 101, 108, 108, 97, 110, 101, 111, 117, 115, 68, 97, 116, 97, 144, 171, 112, 114, 111, 100, 117, 99, 116, 78, 97, 109, 101, 168, 79, 65, 75, 45, 68, 45, 76, 82, 217, 32, 115, 116, 101, 114, 101, 111, 69, 110, 97, 98, 108, 101, 68, 105, 115, 116, 111, 114, 116, 105, 111, 110, 67, 111, 114, 114, 101, 99, 116, 105, 111, 110, 195, 183, 115, 116, 101, 114, 101, 111, 82, 101, 99, 116, 105, 102, 105, 99, 97, 116, 105, 111, 110, 68, 97, 116, 97, 132, 176, 108, 101, 102, 116, 67, 97, 109, 101, 114, 97, 83, 111, 99, 107, 101, 116, 1, 181, 114, 101, 99, 116, 105, 102, 105, 101, 100, 82, 111, 116, 97, 116, 105, 111, 110, 76, 101, 102, 116, 147, 147, 202, 63, 127, 253, 84, 202, 185, 55, 93, 85, 202, 60, 19, 244, 54, 147, 202, 57, 4, 67, 3, 202, 63, 127, 255, 12, 202, 59, 176, 218, 64, 147, 202, 188, 19, 247, 158, 202, 187, 176, 206, 217, 202, 63, 127, 252, 96, 182, 114, 101, 99, 116, 105, 102, 105, 101, 100, 82, 111, 116, 97, 116, 105, 111, 110, 82, 105, 103, 104, 116, 147, 147, 202, 63, 127, 242, 67, 202, 59, 11, 252, 175, 202, 60, 166, 205, 157, 147, 202, 187, 4, 200, 142, 202, 63, 127, 254, 231, 202, 187, 177, 132, 112, 147, 202, 188, 166, 229, 43, 202, 59, 176, 32, 215, 202, 63, 127, 241, 115, 177, 114, 105, 103, 104, 116, 67, 97, 109, 101, 114, 97, 83, 111, 99, 107, 101, 116, 2, 184, 115, 116, 101, 114, 101, 111, 85, 115, 101, 83, 112, 101, 99, 84, 114, 97, 110, 115, 108, 97, 116, 105, 111, 110, 194, 167, 118, 101, 114, 115, 105, 111, 110, 7, 180, 118, 101, 114, 116, 105, 99, 97, 108, 67, 97, 109, 101, 114, 97, 83, 111, 99, 107, 101, 116, 255];
+
+        let mut read = std::io::Cursor::new(bytes);
+
+        let res = rmpv::decode::read_value(&mut read).unwrap();
+
+        let rmpv::Value::Array(mut items) = res else {
+            panic!();
+        };
+
+        if items.len() == 3 {
+            items.push(rmpv::Value::Nil);
+        }
+
+        let [version, msg_ty, status, res]: [rmpv::Value; 4] = items.try_into().unwrap();
+
+        let data = serde_rmpv::from_value::<(bool, String, (bool, String, EepromData))>(&res).unwrap();
+    }
 }
 
 pub mod logger {
@@ -8732,7 +10034,8 @@ mod calibration_handler {
     }
 }
 mod ros2 {
-    struct Ros2Ctx<'a> {
+    #[derive(Clone)]
+    pub struct Ros2Ctx<'a> {
         base_frame: &'a str,
         enable_rotation: bool,
 
@@ -8743,10 +10046,24 @@ mod ros2 {
         use_device_timestamp: bool,
     }
 
+    impl <'a> Ros2Ctx<'a> {
+        pub fn new(base_frame: &'a str) -> Self {
+            Self {
+                base_frame,
+                enable_rotation: true,
+                linear_acceleration_covariance: 0.,
+                angular_velocity_covariance: 0.,
+                rotation_covariance: 0.,
+
+                use_device_timestamp: true,
+            }
+        }
+    }
+
     use crate::rpc::EepromData;
     // transforms
     impl Ros2Ctx<'_> {
-        fn imu_transform(&self, eeprom: &EepromData, time: r2r::builtin_interfaces::msg::Time) -> r2r::geometry_msgs::msg::TransformStamped {
+        pub fn imu_transform(&self, eeprom: &EepromData, time: r2r::builtin_interfaces::msg::Time) -> r2r::geometry_msgs::msg::TransformStamped {
             // TODO: frame names need to be updated
             // - all of the stuff for frame naming conventions can be found in
             // depthai_bridge/src/TFPublisher.cpp
@@ -8790,7 +10107,7 @@ mod ros2 {
             }
         }
 
-        fn camera_transforms(&self, eeprom: &EepromData, time: r2r::builtin_interfaces::msg::Time) -> impl Iterator<Item = r2r::geometry_msgs::msg::TransformStamped> {
+        pub fn camera_transforms(&self, eeprom: &EepromData, time: r2r::builtin_interfaces::msg::Time) -> impl Iterator<Item = r2r::geometry_msgs::msg::TransformStamped> {
             use crate::rpc::CameraBoardSocket;
             use crate::pipeline::LengthUnit;
 
@@ -8962,10 +10279,16 @@ mod ros2 {
         }
     }
 
+    struct CameraIntrinsics {
+        cx: f32,
+        cy: f32,
+        fx: f32,
+        fy: f32,
+    }
+
     // pcl
     impl Ros2Ctx<'_> {
         fn pointcloud_msg(&self, pcl: &crate::pipeline::PointcloudFrame, is_color: bool) -> r2r::sensor_msgs::msg::PointCloud2 {
-
             let time = if self.use_device_timestamp {
                 pcl.metadata.device_timestamp
             } else {
@@ -9050,7 +10373,414 @@ mod ros2 {
                 is_bigendian: false,
             }
         }
+
+        pub fn pointcloud_from_images(&self, depth: crate::pipeline::Frame, color: Option<crate::pipeline::Frame>) -> Result<r2r::sensor_msgs::msg::PointCloud2, crate::pipeline::Frame> {
+            let ts = if self.use_device_timestamp {
+                depth.metadata().device_timestamp
+            } else {
+                depth.metadata().timestamp
+            };
+
+            //TODO: need to get transformation from depth frame and apply it to the pc
+            //
+            //also update the bounding box
+            //
+            //and maybe set the extrinsics
+
+            if let Some(color) = color {
+                self.pointcloud_from_rgbd(depth, color, ts)
+            } else {
+                Ok(self.pointcloud_from_depth(depth, ts))
+            }
+        }
+
+        fn intrinsics_from_frame(frame: &crate::pipeline::Frame) -> CameraIntrinsics {
+            let intrinsics = frame.metadata().transformation.intrinsic_matrix();
+            let fx = intrinsics[(0, 0)];
+            let fy = intrinsics[(1, 1)];
+            let cx = intrinsics[(0, 2)];
+            let cy = intrinsics[(1, 2)];
+
+            CameraIntrinsics {
+                fx,
+                fy,
+                cx,
+                cy,
+            }
+        }
+
+        fn pointcloud_from_rgbd(&self, depth: crate::pipeline::Frame, color: crate::pipeline::Frame, ts: crate::pipeline::Timestamp) -> Result<r2r::sensor_msgs::msg::PointCloud2, crate::pipeline::Frame> {
+            if depth.metadata().fb.width != color.metadata().fb.width || depth.metadata().fb.height != color.metadata().fb.height || !matches!(color.metadata().fb.ty, crate::pipeline::FrameType::Rgb888i) {
+                // bad color frame, skip
+                //return self.pointcloud_from_depth()
+                return Err(depth);
+            }
+
+            let width = depth.metadata().fb.width;
+            let height = depth.metadata().fb.height;
+
+
+            let scale = 1000.;
+
+
+            let CameraIntrinsics {
+                cx,
+                cy,
+                // focal lengths
+                fx,
+                fy,
+            } = Self::intrinsics_from_frame(&depth);
+
+            let extrinsics = &depth.metadata().transformation.extrinsics;
+
+            let transform_mtx = extrinsics.transformation_matrix(true, crate::pipeline::LengthUnit::Millimeter).unwrap_or(nalgebra::Matrix4::identity());
+
+            //TODO: transform between the camera socket to some arbitrary mapping
+            // - this is only done if specified, default just uses the provided extrinsics
+
+            #[derive(PartialEq, Default, Debug)]
+            struct Point3rgb {
+                x: f32,
+                y: f32,
+                z: f32,
+                r: u8,
+                g: u8,
+                b: u8,
+            }
+
+            use rayon::prelude::*;
+
+            const COLOR_BPP: usize = 3;
+            const DEPTH_BPP: usize = 2;
+            let color_rows = color.bytes.par_chunks_exact((width as usize) * COLOR_BPP);
+            let depth_rows = depth.bytes.par_chunks_exact((width as usize) * DEPTH_BPP);
+
+            let data = color_rows.zip(depth_rows).enumerate().map(|(row, (color, depth))| {
+                let (color, _) = color.as_chunks::<COLOR_BPP>();
+                let (depth, _) = depth.as_chunks::<DEPTH_BPP>();
+
+                color.iter().zip(depth.iter()).enumerate().filter_map(move |(col, (color, depth))| {
+                    let depth = u16::from_be_bytes(*depth);
+
+                    /*
+                    if depth == 0 {
+                        return None;
+                    }
+                    */
+
+                    let z = (depth as f32) * scale;
+                    /*
+                    let x = ((col as f32) - cx) * z / fx;
+                    let y = ((row as f32) - cy) * z / fy;
+                    */
+                    let x = ((col as f32) - cx) / fx;
+                    let y = ((row as f32) - cy) / fy;
+
+                    let [r, g, b] = *color;
+
+                    Some(Point3rgb {
+                        x,
+                        y,
+                        z,
+                        r,
+                        g,
+                        b,
+                    })
+                })
+                // apply extrinsics
+                .map(|mut p| {
+                    /*
+                    let x = transform_mtx[(0, 0)] * p.x + transform_mtx[(0, 1)] * p.y + transform_mtx[(0, 2)] * p.z + transform_mtx[(0, 3)];
+                    let y = transform_mtx[(1, 0)] * p.x + transform_mtx[(1, 1)] * p.y + transform_mtx[(1, 2)] * p.z + transform_mtx[(1, 3)];
+                    let z = transform_mtx[(2, 0)] * p.x + transform_mtx[(2, 1)] * p.y + transform_mtx[(2, 2)] * p.z + transform_mtx[(2, 3)];
+
+                    p.x = x;
+                    p.y = y;
+                    p.z = z;
+                    */
+
+                    p
+                })
+                // output raw bytes
+                .map(|Point3rgb { x, y, z, r, g, b}| {
+                    let [x1, x2, x3, x4] = x.to_le_bytes();
+                    let [y1, y2, y3, y4] = y.to_le_bytes();
+                    let [z1, z2, z3, z4] = z.to_le_bytes();
+                    [
+                        x1, x2, x3, x4, 
+                        y1, y2, y3, y4,
+                        z1, z2, z3, z4,
+                        r,  g,  b,  0,
+                    ]
+                })
+            })
+            .fold(
+                || vec![],
+                |mut vec, points| {
+                    vec.extend(points.flatten());
+                    vec
+                })
+            .flatten()
+            .collect::<Vec<u8>>();
+
+            use r2r::sensor_msgs::msg::PointField;
+
+            let fields = vec![
+                PointField {
+                    name: "x".to_string(),
+                    offset: 0,
+                    datatype: PointField::FLOAT32 as u8,
+                    count: 1,
+                },
+                PointField {
+                    name: "y".to_string(),
+                    offset: 4,
+                    datatype: PointField::FLOAT32 as u8,
+                    count: 1,
+                },
+                PointField {
+                    name: "z".to_string(),
+                    offset: 8,
+                    datatype: PointField::FLOAT32 as u8,
+                    count: 1,
+                },
+                PointField {
+                    name: "rgb".to_string(),
+                    offset: 12,
+                    datatype: PointField::UINT32 as u8,
+                    count: 1,
+                },
+            ];
+
+            let stamp = r2r::builtin_interfaces::msg::Time {
+                sec: ts.sec as _,
+                nanosec: ts.nsec as _,
+            };
+
+            let point_step = 16;
+
+            Ok(r2r::sensor_msgs::msg::PointCloud2 {
+                header: r2r::std_msgs::msg::Header {
+                    stamp,
+                    frame_id: "map".to_string(),
+                },
+                width,
+                height,
+                is_dense: true,
+                fields,
+                point_step,
+                row_step: point_step*width,
+                data,
+                is_bigendian: false,
+            })
+        }
+
+        fn pointcloud_from_depth(&self, depth: crate::pipeline::Frame, ts: crate::pipeline::Timestamp) -> r2r::sensor_msgs::msg::PointCloud2 {
+            let width = depth.metadata().fb.width;
+            let height = depth.metadata().fb.height;
+
+            let scale = 1.;
+
+            let CameraIntrinsics {
+                cx,
+                cy,
+                // focal lengths
+                fx,
+                fy,
+            } = Self::intrinsics_from_frame(&depth);
+
+            let extrinsics = &depth.metadata().transformation.extrinsics;
+
+            let transform_mtx = extrinsics.transformation_matrix(true, crate::pipeline::LengthUnit::Millimeter).unwrap_or(nalgebra::Matrix4::identity());
+
+            //TODO: transform between the camera socket to some arbitrary mapping
+            // - this is only done if specified, default just uses the provided extrinsics
+
+            #[derive(PartialEq, Default, Debug)]
+            struct Point3{
+                x: f32,
+                y: f32,
+                z: f32,
+            }
+
+            use rayon::prelude::*;
+
+            const DEPTH_BPP: usize = 2;
+            let depth_rows = depth.bytes.par_chunks_exact((width as usize) * DEPTH_BPP);
+
+            let data = depth_rows.enumerate().map(|(row, depth)| {
+                let (depth, _) = depth.as_chunks::<DEPTH_BPP>();
+
+                depth.iter().enumerate().filter_map(move |(col, depth)| {
+                    let depth = u16::from_le_bytes(*depth);
+
+                    if depth == 0 {
+                        return None;
+                    }
+
+                    //let z = (depth as f32) * scale;
+                    let z = 0.;
+
+                    let x = col as f32;
+                    let y = row as f32;
+                    /*
+                    let x = ((col as f32) - cx) * z / fx;
+                    let y = ((row as f32) - cy) * z / fy;
+                    */
+
+                    /*
+                    let x = (col as f32) - cx * z / fx;
+                    let y = (col as f32) - cy * z / fy;
+                    */
+
+                    Some(Point3 {
+                        x,
+                        y,
+                        z,
+                    })
+                })
+                // apply extrinsics
+                .map(|mut p| {
+                    /*
+                    let x = transform_mtx[(0, 0)] * p.x + transform_mtx[(0, 1)] * p.y + transform_mtx[(0, 2)] * p.z + transform_mtx[(0, 3)];
+                    let y = transform_mtx[(1, 0)] * p.x + transform_mtx[(1, 1)] * p.y + transform_mtx[(1, 2)] * p.z + transform_mtx[(1, 3)];
+                    let z = transform_mtx[(2, 0)] * p.x + transform_mtx[(2, 1)] * p.y + transform_mtx[(2, 2)] * p.z + transform_mtx[(2, 3)];
+
+                    p.x = x;
+                    p.y = y;
+                    p.z = z;
+                    */
+
+                    p
+                })
+                // output raw bytes
+                .map(|Point3 { x, y, z }| {
+                    let [x1, x2, x3, x4] = x.to_le_bytes();
+                    let [y1, y2, y3, y4] = y.to_le_bytes();
+                    let [z1, z2, z3, z4] = z.to_le_bytes();
+                    [
+                        x1, x2, x3, x4, 
+                        y1, y2, y3, y4,
+                        z1, z2, z3, z4,
+                    ]
+                })
+            })
+            .fold(
+                || vec![],
+                |mut vec, points| {
+                    vec.extend(points.flatten());
+                    vec
+                })
+            .flatten()
+            .collect::<Vec<u8>>();
+
+            use r2r::sensor_msgs::msg::PointField;
+
+            let fields = vec![
+                PointField {
+                    name: "x".to_string(),
+                    offset: 0,
+                    datatype: PointField::FLOAT32 as u8,
+                    count: 1,
+                },
+                PointField {
+                    name: "y".to_string(),
+                    offset: 4,
+                    datatype: PointField::FLOAT32 as u8,
+                    count: 1,
+                },
+                PointField {
+                    name: "z".to_string(),
+                    offset: 8,
+                    datatype: PointField::FLOAT32 as u8,
+                    count: 1,
+                },
+            ];
+
+            let stamp = r2r::builtin_interfaces::msg::Time {
+                sec: ts.sec as _,
+                nanosec: ts.nsec as _,
+            };
+
+            let point_step = 12;
+
+            r2r::sensor_msgs::msg::PointCloud2 {
+                header: r2r::std_msgs::msg::Header {
+                    stamp,
+                    frame_id: Default::default()
+                },
+                width,
+                height,
+                is_dense: true,
+                fields,
+                point_step,
+                row_step: point_step*width,
+                data,
+                is_bigendian: false,
+            }
+        }
     }
 
     use nalgebra::base::dimension::Const;
 }
+
+/*
+
+   [19443010A1A1872D00] [169.254.1.222] [1777895825.220] [host] [trace] RPC: [1,1,16527326580805871264,[{"bridges":[],"connections":[
+
+   {"node1Id":5,"node1Output":"outputPointCloud","node1OutputGroup":"","node2Id":7,"node2Input":"in","node2InputGroup":""},
+   {"node1Id":6,"node1Output":"out","node1OutputGroup":"","node2Id":5,"node2Input":"inSync","node2InputGroup":""},
+   {"node1Id":3,"node1Output":"depth","node1OutputGroup":"","node2Id":6,"node2Input":"depth","node2InputGroup":"inputs"},
+   {"node1Id":3,"node1Output":"depth","node1OutputGroup":"","node2Id":4,"node2Input":"input","node2InputGroup":""},
+   {"node1Id":2,"node1Output":"0","node1OutputGroup":"dynamicOutputs","node2Id":3,"node2Input":"right","node2InputGroup":""},
+   {"node1Id":1,"node1Output":"0","node1OutputGroup":"dynamicOutputs","node2Id":3,"node2Input":"left","node2InputGroup":""},
+   {"node1Id":0,"node1Output":"0","node1OutputGroup":"dynamicOutputs","node2Id":6,"node2Input":"color","node2InputGroup":"inputs"},
+   {"node1Id":0,"node1Output":"0","node1OutputGroup":"dynamicOutputs","node2Id":4,"node2Input":"inputAlignTo","node2InputGroup":""}
+
+   ],"globalProperties":{"pipelineName":null,"pipelineVersion":null},"nodes":[
+
+   [7,{"alias":"","deviceId":"19443010A1A1872D00","deviceNode":true,"id":7,"ioInfo":[[["","pipelineEventOutput"],{"blocking":false,"group":"","id":49,"name":"pipelineEventOutput","queueSize":8,"type":0,"waitForMessage":false}],[["","in"],{"blocking":true,"group":"","id":48,"name":"in","queueSize":3,"type":3,"waitForMessage":false}]],"logLevel":0,"name":"XLinkOut","parentId":-1,"properties":[185,5,136,0,0,128,191,189,22,95,95,120,95,53,95,111,117,116,112,117,116,80,111,105,110,116,67,108,111,117,100,0,255,255]}],
+   [6,{"alias":"sync","deviceId":"19443010A1A1872D00","deviceNode":true,"id":6,"ioInfo":[[["","pipelineEventOutput"],{"blocking":false,"group":"","id":46,"name":"pipelineEventOutput","queueSize":8,"type":0,"waitForMessage":false}],[["inputs","depth"],{"blocking":false,"group":"inputs","id":45,"name":"depth","queueSize":4,"type":3,"waitForMessage":false}],[["","out"],{"blocking":false,"group":"","id":47,"name":"out","queueSize":8,"type":0,"waitForMessage":false}],[["inputs","color"],{"blocking":false,"group":"inputs","id":44,"name":"color","queueSize":10,"type":3,"waitForMessage":false}]],"logLevel":0,"name":"Sync","parentId":5,"properties":[185,3,134,128,150,152,0,255,0]}],
+   [5,{"alias":"","deviceId":"19443010A1A1872D00","deviceNode":true,"id":5,"ioInfo":[[["","outputPointCloud"],{"blocking":false,"group":"","id":42,"name":"outputPointCloud","queueSize":8,"type":0,"waitForMessage":false}],[["","passthroughDepth"],{"blocking":false,"group":"","id":43,"name":"passthroughDepth","queueSize":8,"type":0,"waitForMessage":false}],[["","pipelineEventOutput"],{"blocking":false,"group":"","id":41,"name":"pipelineEventOutput","queueSize":8,"type":0,"waitForMessage":false}],[["","inSync"],{"blocking":false,"group":"","id":40,"name":"inSync","queueSize":4,"type":3,"waitForMessage":false}],[["","inputConfig"],{"blocking":false,"group":"","id":39,"name":"inputConfig","queueSize":4,"type":3,"waitForMessage":false}]],"logLevel":0,"name":"PointCloud","parentId":-1,"properties":[185,2,185,10,0,185,2,0,0,185,2,0,0,0,186,4,186,4,136,0,0,128,63,136,0,0,0,0,136,0,0,0,0,136,0,0,0,0,186,4,136,0,0,0,0,136,0,0,128,63,136,0,0,0,0,136,0,0,0,0,186,4,136,0,0,0,0,136,0,0,0,0,136,0,0,128,63,136,0,0,0,0,186,4,136,0,0,0,0,136,0,0,0,0,136,0,0,0,0,136,0,0,128,63,0,0,255,255,1,4]}],
+   [4,{"alias":"","deviceId":"19443010A1A1872D00","deviceNode":true,"id":4,"ioInfo":[[["","passthroughInput"],{"blocking":false,"group":"","id":38,"name":"passthroughInput","queueSize":8,"type":0,"waitForMessage":false}],[["","outputAligned"],{"blocking":false,"group":"","id":37,"name":"outputAligned","queueSize":8,"type":0,"waitForMessage":false}],[["","pipelineEventOutput"],{"blocking":false,"group":"","id":36,"name":"pipelineEventOutput","queueSize":8,"type":0,"waitForMessage":false}],[["","inputAlignTo"],{"blocking":false,"group":"","id":35,"name":"inputAlignTo","queueSize":1,"type":3,"waitForMessage":true}],[["","input"],{"blocking":false,"group":"","id":34,"name":"input","queueSize":4,"type":3,"waitForMessage":false}],[["","inputConfig"],{"blocking":false,"group":"","id":33,"name":"inputConfig","queueSize":4,"type":3,"waitForMessage":false}]],"logLevel":0,"name":"ImageAlign","parentId":-1,"properties":[185,8,185,1,0,4,0,0,188,0,255,1,2]}],
+   [3,{"alias":"","deviceId":"19443010A1A1872D00","deviceNode":true,"id":3,"ioInfo":[[["","confidenceMap"],{"blocking":false,"group":"","id":32,"name":"confidenceMap","queueSize":8,"type":0,"waitForMessage":false}],[["","debugExtDispLrCheckIt2"],{"blocking":false,"group":"","id":30,"name":"debugExtDispLrCheckIt2","queueSize":8,"type":0,"waitForMessage":false}],[["","debugDispLrCheckIt2"],{"blocking":false,"group":"","id":28,"name":"debugDispLrCheckIt2","queueSize":8,"type":0,"waitForMessage":false}],[["","rectifiedLeft"],{"blocking":false,"group":"","id":24,"name":"rectifiedLeft","queueSize":8,"type":0,"waitForMessage":false}],[["","syncedRight"],{"blocking":false,"group":"","id":23,"name":"syncedRight","queueSize":8,"type":0,"waitForMessage":false}],[["","syncedLeft"],{"blocking":false,"group":"","id":22,"name":"syncedLeft","queueSize":8,"type":0,"waitForMessage":false}],[["","disparity"],{"blocking":false,"group":"","id":21,"name":"disparity","queueSize":8,"type":0,"waitForMessage":false}],[["","debugDispCostDump"],{"blocking":false,"group":"","id":31,"name":"debugDispCostDump","queueSize":8,"type":0,"waitForMessage":false}],[["","depth"],{"blocking":false,"group":"","id":20,"name":"depth","queueSize":8,"type":0,"waitForMessage":false}],[["","pipelineEventOutput"],{"blocking":false,"group":"","id":19,"name":"pipelineEventOutput","queueSize":8,"type":0,"waitForMessage":false}],[["","outConfig"],{"blocking":false,"group":"","id":26,"name":"outConfig","queueSize":8,"type":0,"waitForMessage":false}],[["","right"],{"blocking":true,"group":"","id":18,"name":"right","queueSize":3,"type":3,"waitForMessage":false}],[["","left"],{"blocking":true,"group":"","id":17,"name":"left","queueSize":3,"type":3,"waitForMessage":false}],[["","rectifiedRight"],{"blocking":false,"group":"","id":25,"name":"rectifiedRight","queueSize":8,"type":0,"waitForMessage":false}],[["","inputAlignTo"],{"blocking":false,"group":"","id":16,"name":"inputAlignTo","queueSize":1,"type":3,"waitForMessage":true}],[["","debugExtDispLrCheckIt1"],{"blocking":false,"group":"","id":29,"name":"debugExtDispLrCheckIt1","queueSize":8,"type":0,"waitForMessage":false}],[["","debugDispLrCheckIt1"],{"blocking":false,"group":"","id":27,"name":"debugDispLrCheckIt1","queueSize":8,"type":0,"waitForMessage":false}],[["","inputConfig"],{"blocking":true,"group":"","id":15,"name":"inputConfig","queueSize":3,"type":3,"waitForMessage":false}]],"logLevel":0,"name":"StereoDepth","parentId":-1,"properties":[185,23,185,7,185,12,0,2,136,0,0,122,68,1,0,1,1,10,5,0,190,0,185,11,186,5,3,1,2,4,5,0,0,185,5,0,2,136,0,0,0,63,3,1,185,4,0,3,136,205,204,204,62,3,185,2,0,134,255,255,0,0,185,2,0,133,0,1,185,3,0,50,2,185,2,1,0,185,5,1,128,210,128,200,1,1,185,2,1,128,200,185,6,255,0,1,0,1,1,185,6,1,0,0,55,0,185,3,0,2,127,185,7,1,128,250,129,244,1,128,250,129,244,1,185,6,1,11,10,22,15,5,185,4,1,33,22,63,185,6,20,4,1,8,2,0,2,255,1,0,190,190,190,190,1,185,5,189,0,189,0,190,16,16,0,3,255,255,1,190,1,190,190,190,190,190,190]}],
+   [2,{"alias":"","deviceId":"19443010A1A1872D00","deviceNode":true,"id":2,"ioInfo":[[["dynamicOutputs","0"],{"blocking":false,"group":"dynamicOutputs","id":14,"name":"0","queueSize":8,"type":0,"waitForMessage":false}],[["","pipelineEventOutput"],{"blocking":false,"group":"","id":12,"name":"pipelineEventOutput","queueSize":8,"type":0,"waitForMessage":false}],[["","raw"],{"blocking":false,"group":"","id":13,"name":"raw","queueSize":8,"type":0,"waitForMessage":false}],[["","mockIsp"],{"blocking":true,"group":"","id":11,"name":"mockIsp","queueSize":8,"type":3,"waitForMessage":false}],[["","inputControl"],{"blocking":true,"group":"","id":10,"name":"inputControl","queueSize":3,"type":3,"waitForMessage":false}]],"logLevel":0,"name":"Camera","parentId":-1,"properties":[185,22,185,33,0,3,0,136,0,0,0,0,104,100,185,3,0,129,225,2,0,185,5,129,176,35,129,214,104,129,203,99,0,130,32,59,224,180,185,5,129,67,117,0,0,0,0,0,0,0,0,0,0,0,0,255,185,3,0,112,17,185,3,133,203,99,3,0,130,102,111,118,0,0,0,0,0,0,0,0,0,0,17,0,186,0,2,255,189,0,255,255,255,255,255,136,0,0,128,191,136,0,0,128,191,0,3,134,0,0,160,0,3,134,0,0,160,0,4,4,4,190,190,186,1,185,6,185,1,184,0,186,2,129,128,2,129,144,1,185,1,184,0,136,0,0,200,65,190,0,190,0]}],
+   [1,{"alias":"","deviceId":"19443010A1A1872D00","deviceNode":true,"id":1,"ioInfo":[[["dynamicOutputs","0"],{"blocking":false,"group":"dynamicOutputs","id":9,"name":"0","queueSize":8,"type":0,"waitForMessage":false}],[["","pipelineEventOutput"],{"blocking":false,"group":"","id":7,"name":"pipelineEventOutput","queueSize":8,"type":0,"waitForMessage":false}],[["","raw"],{"blocking":false,"group":"","id":8,"name":"raw","queueSize":8,"type":0,"waitForMessage":false}],[["","mockIsp"],{"blocking":true,"group":"","id":6,"name":"mockIsp","queueSize":8,"type":3,"waitForMessage":false}],[["","inputControl"],{"blocking":true,"group":"","id":5,"name":"inputControl","queueSize":3,"type":3,"waitForMessage":false}]],"logLevel":0,"name":"Camera","parentId":-1,"properties":[185,22,185,33,0,3,0,136,0,0,0,0,64,124,185,3,129,203,99,130,224,123,180,106,129,203,99,185,5,129,176,123,129,180,106,129,203,99,0,3,185,5,0,0,129,104,100,114,0,0,0,0,0,0,0,0,0,255,185,3,0,0,0,185,3,0,0,0,96,0,0,96,0,0,0,0,0,128,215,128,210,0,186,0,1,255,189,0,255,255,255,255,255,136,0,0,128,191,136,0,0,128,191,0,3,134,0,0,160,0,3,134,0,0,160,0,4,4,4,190,190,186,1,185,6,185,1,184,0,186,2,129,128,2,129,144,1,185,1,184,0,136,0,0,200,65,190,0,190,0]}],
+   [0,{"alias":"","deviceId":"19443010A1A1872D00","deviceNode":true,"id":0,"ioInfo":[[["dynamicOutputs","0"],{"blocking":false,"group":"dynamicOutputs","id":4,"name":"0","queueSize":8,"type":0,"waitForMessage":false}],[["","pipelineEventOutput"],{"blocking":false,"group":"","id":2,"name":"pipelineEventOutput","queueSize":8,"type":0,"waitForMessage":false}],[["","raw"],{"blocking":false,"group":"","id":3,"name":"raw","queueSize":8,"type":0,"waitForMessage":false}],[["","mockIsp"],{"blocking":true,"group":"","id":1,"name":"mockIsp","queueSize":8,"type":3,"waitForMessage":false}],[["","inputControl"],{"blocking":true,"group":"","id":0,"name":"inputControl","queueSize":3,"type":3,"waitForMessage":false}]],"logLevel":0,"name":"Camera","parentId":-1,"properties":[185,22,185,33,0,3,0,136,0,0,0,0,128,255,128,255,185,3,130,255,255,255,255,1,0,185,5,0,0,0,0,130,52,1,3,0,185,5,38,0,0,0,130,72,229,3,0,0,0,0,0,0,0,101,8,255,185,3,20,0,0,185,3,134,152,228,3,0,0,130,105,176,5,0,0,0,0,0,0,0,0,0,0,0,0,0,186,0,0,255,189,0,255,255,255,255,255,136,0,0,128,191,136,0,0,128,191,0,3,134,0,0,160,0,3,134,0,0,160,0,4,4,4,190,190,186,1,185,6,185,1,184,0,186,2,129,0,5,129,192,3,185,1,184,0,136,0,0,200,65,22,0,1,0]}]]}]]
+
+
+*/
+
+/*
+PipelineSchema { connections: [
+NodeConnectionSchema { output_id: 3, output_group: "", output: "depth", input_id: 4, input_group: "", input: "input" },
+NodeConnectionSchema { output_id: 4, output_group: "", output: "outputAligned", input_id: 6, input_group: "inputs", input: "depth" },
+NodeConnectionSchema { output_id: 1, output_group: "dynamicOutputs", output: "0", input_id: 3, input_group: "", input: "left" },
+NodeConnectionSchema { output_id: 6, output_group: "", output: "out", input_id: 5, input_group: "", input: "inSync" },
+NodeConnectionSchema { output_id: 5, output_group: "", output: "outputPointCloud", input_id: 7, input_group: "", input: "in" },
+NodeConnectionSchema { output_id: 0, output_group: "dynamicOutputs", output: "0", input_id: 4, input_group: "", input: "inputAlignTo" },
+NodeConnectionSchema { output_id: 0, output_group: "dynamicOutputs", output: "0", input_id: 6, input_group: "inputs", input: "color" },
+NodeConnectionSchema { output_id: 2, output_group: "dynamicOutputs", output: "0", input_id: 3, input_group: "", input: "right" }
+], global_properties: GlobalProperties { leon_css_frequency_hz: 700000000.0, leon_mss_frequency_hz: 700000000.0, pipeline_name: None, pipeline_version: None, calibration: None, eeprom_id: Some(0), camera_tuning_blob_size: None, camera_tuning_blob_uri: "", camera_socket_tuning_blob_size: [], camera_socket_tuning_blob_uri: [], xlink_chunk_size: -1, sipp_buffer_size: 18432, sipp_dma_buffer_size: 16384 }, nodes: [
+(7, NodeObjInfo { id: 7, parent_id: -1, name: "XLinkOut", alias: "", device_id: "test", device_node: true, properties: [185, 5, 136, 0, 0, 128, 191, 189, 9, 95, 95, 120, 95, 48, 95, 111, 117, 116, 0, 255, 255], log_level: Off, io_info: [(("", "in"), NodeIoInfo { group: "", name: "in", ty: SReceiver, blocking: true, queue_size: 3, wait_for_message: false, id: 44 })] }),
+(6, NodeObjInfo { id: 6, parent_id: 5, name: "Sync", alias: "", device_id: "test", device_node: true, properties: [185, 3, 134, 128, 150, 152, 0, 255, 0], log_level: Off, io_info: [(("inputs", "color"), NodeIoInfo { group: "inputs", name: "color", ty: SReceiver, blocking: false, queue_size: 10, wait_for_message: false, id: 42 }), (("", "out"), NodeIoInfo { group: "", name: "out", ty: MSender, blocking: false, queue_size: 8, wait_for_message: false, id: 43 }), (("inputs", "depth"), NodeIoInfo { group: "inputs", name: "depth", ty: SReceiver, blocking: false, queue_size: 4, wait_for_message: false, id: 41 })] }),
+(5, NodeObjInfo { id: 5, parent_id: -1, name: "PointCloud", alias: "", device_id: "test", device_node: true, properties: [185, 2, 185, 10, 0, 185, 2, 0, 0, 185, 2, 0, 0, 0, 186, 4, 186, 4, 136, 0, 0, 128, 63, 136, 0, 0, 0, 0, 136, 0, 0, 0, 0, 136, 0, 0, 0, 0, 186, 4, 136, 0, 0, 0, 0, 136, 0, 0, 128, 63, 136, 0, 0, 0, 0, 136, 0, 0, 0, 0, 186, 4, 136, 0, 0, 0, 0, 136, 0, 0, 0, 0, 136, 0, 0, 128, 63, 136, 0, 0, 0, 0, 186, 4, 136, 0, 0, 0, 0, 136, 0, 0, 0, 0, 136, 0, 0, 0, 0, 136, 0, 0, 128, 63, 2, 0, 255, 255, 1, 4], log_level: Off, io_info: [(("", "inSync"), NodeIoInfo { group: "", name: "inSync", ty: SReceiver, blocking: false, queue_size: 4, wait_for_message: false, id: 38 }), (("", "inputConfig"), NodeIoInfo { group: "", name: "inputConfig", ty: SReceiver, blocking: false, queue_size: 8, wait_for_message: false, id: 37 }), (("", "passthroughDepth"), NodeIoInfo { group: "", name: "passthroughDepth", ty: MSender, blocking: false, queue_size: 8, wait_for_message: false, id: 39 }), (("", "outputPointCloud"), NodeIoInfo { group: "", name: "outputPointCloud", ty: MSender, blocking: false, queue_size: 8, wait_for_message: false, id: 40 })] }),
+(4, NodeObjInfo { id: 4, parent_id: -1, name: "ImageAlign", alias: "", device_id: "test", device_node: true, properties: [185, 8, 185, 1, 0, 4, 0, 0, 188, 0, 255, 1, 2], log_level: Off, io_info: [(("", "inputConfig"), NodeIoInfo { group: "", name: "inputConfig", ty: SReceiver, blocking: false, queue_size: 8, wait_for_message: false, id: 25 }), (("", "input"), NodeIoInfo { group: "", name: "input", ty: SReceiver, blocking: false, queue_size: 4, wait_for_message: false, id: 26 }), (("", "inputAlignTo"), NodeIoInfo { group: "", name: "inputAlignTo", ty: SReceiver, blocking: false, queue_size: 1, wait_for_message: true, id: 27 }), (("", "outputAligned"), NodeIoInfo { group: "", name: "outputAligned", ty: MSender, blocking: false, queue_size: 8, wait_for_message: false, id: 28 }), (("", "passthroughInput"), NodeIoInfo { group: "", name: "passthroughInput", ty: MSender, blocking: false, queue_size: 8, wait_for_message: false, id: 29 })] }),
+(3, NodeObjInfo { id: 3, parent_id: -1, name: "StereoDepth", alias: "", device_id: "test", device_node: true, properties: [185, 23, 185, 7, 185, 12, 2, 2, 136, 0, 0, 122, 68, 1, 0, 0, 0, 10, 3, 0, 190, 0, 185, 11, 186, 5, 1, 3, 2, 4, 5, 7, 0, 185, 5, 1, 1, 136, 0, 0, 0, 63, 3, 1, 185, 4, 1, 3, 136, 0, 0, 0, 63, 3, 185, 2, 0, 133, 152, 58, 185, 2, 0, 133, 0, 1, 185, 3, 1, 128, 200, 2, 185, 2, 2, 0, 185, 5, 1, 100, 128, 210, 3, 1, 185, 2, 1, 128, 200, 185, 6, 255, 0, 1, 0, 1, 1, 185, 6, 1, 0, 0, 15, 0, 185, 3, 0, 2, 127, 185, 7, 1, 128, 250, 129, 244, 1, 128, 250, 129, 244, 1, 185, 6, 1, 45, 40, 49, 15, 5, 185, 4, 1, 95, 90, 99, 185, 6, 20, 10, 1, 2, 5, 0, 2, 255, 1, 0, 190, 190, 190, 190, 1, 185, 5, 189, 0, 189, 0, 190, 16, 16, 0, 3, 3, 3, 1, 190, 1, 190, 190, 190, 190, 190, 190], log_level: Off, io_info: [(("", "disparity"), NodeIoInfo { group: "", name: "disparity", ty: MSender, blocking: false, queue_size: 8, wait_for_message: false, id: 5 }), (("", "outConfig"), NodeIoInfo { group: "", name: "outConfig", ty: MSender, blocking: false, queue_size: 8, wait_for_message: false, id: 10 }), (("", "debugDispLrCheckIt1"), NodeIoInfo { group: "", name: "debugDispLrCheckIt1", ty: MSender, blocking: false, queue_size: 8, wait_for_message: false, id: 11 }), (("", "debugDispLrCheckIt2"), NodeIoInfo { group: "", name: "debugDispLrCheckIt2", ty: MSender, blocking: false, queue_size: 8, wait_for_message: false, id: 12 }), (("", "syncedRight"), NodeIoInfo { group: "", name: "syncedRight", ty: MSender, blocking: false, queue_size: 8, wait_for_message: false, id: 7 }), (("", "inputConfig"), NodeIoInfo { group: "", name: "inputConfig", ty: SReceiver, blocking: true, queue_size: 8, wait_for_message: false, id: 0 }), (("", "debugExtDispLrCheckIt1"), NodeIoInfo { group: "", name: "debugExtDispLrCheckIt1", ty: MSender, blocking: false, queue_size: 8, wait_for_message: false, id: 13 }), (("", "debugExtDispLrCheckIt2"), NodeIoInfo { group: "", name: "debugExtDispLrCheckIt2", ty: MSender, blocking: false, queue_size: 8, wait_for_message: false, id: 14 }), (("", "depth"), NodeIoInfo { group: "", name: "depth", ty: MSender, blocking: false, queue_size: 8, wait_for_message: false, id: 4 }), (("", "debugDispCostDump"), NodeIoInfo { group: "", name: "debugDispCostDump", ty: MSender, blocking: false, queue_size: 8, wait_for_message: false, id: 15 }), (("", "rectifiedRight"), NodeIoInfo { group: "", name: "rectifiedRight", ty: MSender, blocking: false, queue_size: 8, wait_for_message: false, id: 9 }), (("", "confidenceMap"), NodeIoInfo { group: "", name: "confidenceMap", ty: MSender, blocking: false, queue_size: 8, wait_for_message: false, id: 16 }), (("", "inputAlignTo"), NodeIoInfo { group: "", name: "inputAlignTo", ty: SReceiver, blocking: false, queue_size: 8, wait_for_message: false, id: 1 }), (("", "right"), NodeIoInfo { group: "", name: "right", ty: SReceiver, blocking: true, queue_size: 3, wait_for_message: false, id: 3 }), (("", "rectifiedLeft"), NodeIoInfo { group: "", name: "rectifiedLeft", ty: MSender, blocking: false, queue_size: 8, wait_for_message: false, id: 8 }), (("", "left"), NodeIoInfo { group: "", name: "left", ty: SReceiver, blocking: true, queue_size: 3, wait_for_message: false, id: 2 }), (("", "syncedLeft"), NodeIoInfo { group: "", name: "syncedLeft", ty: MSender, blocking: false, queue_size: 8, wait_for_message: false, id: 6 })] }),
+(2, NodeObjInfo { id: 2, parent_id: -1, name: "Camera", alias: "", device_id: "test", device_node: true, properties: [185, 22, 185, 33, 0, 3, 0, 136, 0, 0, 0, 0, 0, 0, 185, 3, 0, 0, 0, 185, 5, 129, 48, 191, 129, 239, 123, 129, 89, 94, 0, 3, 185, 5, 0, 0, 129, 102, 111, 118, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 185, 3, 0, 0, 0, 185, 3, 0, 0, 0, 0, 0, 0, 132, 129, 2, 0, 0, 0, 0, 128, 176, 4, 0, 186, 0, 2, 255, 189, 0, 255, 255, 255, 255, 255, 136, 0, 0, 128, 191, 136, 0, 0, 128, 191, 0, 3, 134, 0, 0, 160, 0, 3, 134, 0, 0, 160, 0, 4, 4, 4, 190, 190, 186, 1, 185, 6, 185, 1, 184, 0, 186, 2, 129, 128, 2, 129, 224, 1, 185, 1, 184, 0, 136, 0, 0, 112, 65, 190, 0, 190, 0], log_level: Off, io_info: [(("", "raw"), NodeIoInfo { group: "", name: "raw", ty: MSender, blocking: false, queue_size: 8, wait_for_message: false, id: 23 }), (("dynamicOutputs", "0"), NodeIoInfo { group: "dynamicOutputs", name: "0", ty: MSender, blocking: false, queue_size: 8, wait_for_message: false, id: 24 }), (("", "inputControl"), NodeIoInfo { group: "", name: "inputControl", ty: SReceiver, blocking: true, queue_size: 8, wait_for_message: false, id: 21 }), (("", "mockIsp"), NodeIoInfo { group: "", name: "mockIsp", ty: SReceiver, blocking: true, queue_size: 8, wait_for_message: false, id: 22 })] }),
+(1, NodeObjInfo { id: 1, parent_id: -1, name: "Camera", alias: "", device_id: "test", device_node: true, properties: [185, 22, 185, 33, 0, 3, 0, 136, 0, 0, 0, 0, 0, 0, 185, 3, 0, 0, 0, 185, 5, 0, 0, 0, 0, 0, 185, 5, 129, 178, 68, 0, 0, 0, 129, 178, 68, 0, 0, 0, 0, 0, 0, 27, 128, 146, 35, 185, 3, 0, 0, 0, 185, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 186, 0, 1, 255, 189, 0, 255, 255, 255, 255, 255, 136, 0, 0, 128, 191, 136, 0, 0, 128, 191, 0, 3, 134, 0, 0, 160, 0, 3, 134, 0, 0, 160, 0, 4, 4, 4, 190, 190, 186, 1, 185, 6, 185, 1, 184, 0, 186, 2, 129, 128, 2, 129, 224, 1, 185, 1, 184, 0, 136, 0, 0, 112, 65, 190, 0, 190, 0], log_level: Off, io_info: [(("dynamicOutputs", "0"), NodeIoInfo { group: "dynamicOutputs", name: "0", ty: MSender, blocking: false, queue_size: 8, wait_for_message: false, id: 20 }), (("", "raw"), NodeIoInfo { group: "", name: "raw", ty: MSender, blocking: false, queue_size: 8, wait_for_message: false, id: 19 }), (("", "mockIsp"), NodeIoInfo { group: "", name: "mockIsp", ty: SReceiver, blocking: true, queue_size: 8, wait_for_message: false, id: 18 }), (("", "inputControl"), NodeIoInfo { group: "", name: "inputControl", ty: SReceiver, blocking: true, queue_size: 8, wait_for_message: false, id: 17 })] }),
+(0, NodeObjInfo { id: 0, parent_id: -1, name: "Camera", alias: "", device_id: "test", device_node: true, properties: [185, 22, 185, 33, 0, 3, 0, 136, 0, 0, 0, 0, 0, 0, 185, 3, 0, 0, 0, 185, 5, 0, 0, 0, 0, 0, 185, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 185, 3, 0, 0, 0, 185, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 186, 0, 0, 255, 189, 0, 255, 255, 255, 255, 255, 136, 0, 0, 128, 191, 136, 0, 0, 128, 191, 0, 3, 134, 0, 0, 160, 0, 3, 134, 0, 0, 160, 0, 4, 4, 4, 190, 190, 186, 1, 185, 6, 185, 1, 184, 0, 186, 2, 129, 128, 2, 129, 224, 1, 185, 1, 184, 0, 136, 0, 0, 112, 65, 9, 0, 190, 0], log_level: Off, io_info: [(("", "inputControl"), NodeIoInfo { group: "", name: "inputControl", ty: SReceiver, blocking: true, queue_size: 8, wait_for_message: false, id: 30 }), (("", "mockIsp"), NodeIoInfo { group: "", name: "mockIsp", ty: SReceiver, blocking: true, queue_size: 8, wait_for_message: false, id: 31 }), (("", "raw"), NodeIoInfo { group: "", name: "raw", ty: MSender, blocking: false, queue_size: 8, wait_for_message: false, id: 32 }), (("dynamicOutputs", "0"), NodeIoInfo { group: "dynamicOutputs", name: "0", ty: MSender, blocking: false, queue_size: 8, wait_for_message: false, id: 33 })] })
+], bridges: [] }
+*/
+
+/*
+
+
+   {"node1Id":3,"node1Output":"depth","node1OutputGroup":"","node2Id":6,"node2Input":"depth","node2InputGroup":"inputs"},
+   {"node1Id":3,"node1Output":"depth","node1OutputGroup":"","node2Id":4,"node2Input":"input","node2InputGroup":""},
+
+
+NodeConnectionSchema { output_id: 3, output_group: "", output: "depth", input_id: 4, input_group: "", input: "input" },
+NodeConnectionSchema { output_id: 4, output_group: "", output: "outputAligned", input_id: 6, input_group: "inputs", input: "depth" },
+
+*/
